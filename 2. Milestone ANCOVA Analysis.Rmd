@@ -1,0 +1,516 @@
+---
+title: "Milestone ANCOVA Data Analysis"
+author: "WWar"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r packages, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(psych)
+library(knitr)
+library(kableExtra)
+library(emmeans)
+library(multcomp)
+library(tidyverse)
+library(effectsize)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+load("C:file path here/GZMCore.RData")
+set.seed(999)
+```
+
+# Variable Preparation.
+
+```{r variable prep, include=TRUE}
+# Create new variable for analyses where only male and female SAB are included
+GZMCore$IdentitySexAnalysis <- ifelse(GZMCore$IdentitySex %in% c(1, 2), GZMCore$IdentitySex, NA)
+GZMCore$IdentitySexAnalysis <- factor(GZMCore$IdentitySexAnalysis)
+# Create a new variable for analysis that groups based on POC and White due to small sample sizes of races.
+GZMCore <- GZMCore %>%
+  mutate(RaceAnalysis = case_when(
+    RaceDemog %in% c(6) ~ as.factor(RaceDemog),  # Retain values 6 "White"
+    RaceDemog %in% c(1, 2, 3, 4, 5, 7, 9) ~ as.factor(1),   # Recode values 1, 3, 4, 5, and 7 as 1 "POC"
+    RaceDemog == 8 ~ as.factor(NA)             # Recode value 8 as NA "Prefer not to say"
+  ))
+
+# recode prefer not to say participants as missing data
+GZMCore$ReligionDemog <- ifelse(GZMCore$ReligionDemog == 3, NA, GZMCore$ReligionDemog)
+GZMCore$IdentityDisability <- ifelse(GZMCore$IdentityDisability == 6, NA, GZMCore$IdentityDisability)
+GZMCore$IdentityNeuro <- ifelse(GZMCore$IdentityNeuro == 3, NA, GZMCore$IdentityNeuro)
+GZMCore$SchoolYear <- ifelse(GZMCore$SchoolYear == 3, NA, GZMCore$SchoolYear)
+
+# Set variables as factors
+GZMCore$RaceAnalysis <- factor(GZMCore$RaceAnalysis)
+GZMCore$SchoolYear <- factor(GZMCore$SchoolYear)
+GZMCore$RaceAnalysis <- factor(GZMCore$RaceAnalysis)
+GZMCore$IdentityDisability <- factor(GZMCore$IdentityDisability)
+GZMCore$IdentityNeuro <- factor(GZMCore$IdentityNeuro)
+GZMCore$ReligionDemog <- factor(GZMCore$ReligionDemog)
+
+# Set demographic values for output interpretation
+GZMCore <- GZMCore %>%
+  mutate(IdentitySexAnalysis = case_when(
+    IdentitySexAnalysis == 1 ~ "AMAB",
+    IdentitySexAnalysis == 2 ~ "AFAB",
+    TRUE ~ as.character(IdentitySexAnalysis)
+  ),
+  SchoolYear = case_when(
+    SchoolYear == 1 ~ "In highschool",
+    SchoolYear == 2 ~ "Not in highschool",
+    TRUE ~ as.character(SchoolYear)
+  ),
+  GenderGroup = case_when(
+    GenderGroup == 1 ~ "Cis male",
+    GenderGroup == 2 ~ "Cis female",
+    GenderGroup == 3 ~ "Gender expansive",
+    GenderGroup == 4 ~ "Transfem",
+    GenderGroup == 5 ~ "Transmasc",
+    TRUE ~ as.character(GenderGroup)
+  ),
+  SexualityGroup = case_when(
+    SexualityGroup == 1 ~ "Monosexual",
+    SexualityGroup == 2 ~ "Plurisexual",
+    SexualityGroup == 3 ~ "Asexual spectrum",
+    SexualityGroup == 4 ~ "Queer or questioning",
+    TRUE ~ as.character(SexualityGroup)
+  ),
+  RaceAnalysis = case_when(
+    RaceAnalysis == 1 ~ "POC",
+    RaceAnalysis == 6 ~ "White",
+    TRUE ~ as.character(RaceAnalysis)
+  ),
+  IdentityDisability = case_when(
+    IdentityDisability == 4 ~ "Identified",
+    IdentityDisability == 5 ~ "Did not identify",
+    TRUE ~ as.character(IdentityDisability)
+  ),
+  IdentityNeuro = case_when(
+    IdentityNeuro == 1 ~ "Identified",
+    IdentityNeuro == 2 ~ "Did not identify",
+    TRUE ~ as.character(IdentityNeuro)
+  ),
+  ReligionDemog = case_when(
+    ReligionDemog == 1 ~ "Is religious",
+    ReligionDemog == 2 ~ "Is not religious",
+    TRUE ~ as.character(ReligionDemog)
+  ))
+```
+
+# Timing of Sexual Identity Development Milestones
+
+## Assumption Checking
+
+```{r assumptions, include=TRUE}
+milestone_ancova <- c("MAttractionTEXT", "MSelfIdentityTEXT", "MSAHomTEXT", "MSAHetTEXT", "MRHomTEXT", "MRHetTEXT", "MComingOutTEXT", "MComingOutFamily4TEXT")
+
+# Loop through each outcome variable
+for (outcome_var in milestone_ancova) {
+  # Fit the ANCOVA model
+  ancova_model <- lm(paste(outcome_var, "~ IdentitySexAnalysis + SchoolYear + GenderGroup + SexualityGroup + RaceAnalysis + IdentityDisability + IdentityNeuro + ReligionDemog + AgeCurrent + RPDS"), data = GZMCore)
+  
+  # Perform ANOVA
+  ancova_result <- anova(ancova_model)
+  
+  # Print the ANOVA results
+  cat("ANOVA results for outcome variable:", outcome_var, "\n")
+  print(ancova_result)
+  
+  # Check Assumptions
+  
+  # Check Linearity: Plot scatterplots of each covariate against the outcome
+  plot(ancova_model)
+  
+  # Check Homoscedasticity: Plot residuals vs. fitted values
+  plot(ancova_model, which = 1)
+  
+  # Check Normality of Residuals: Plot histogram and Q-Q plot of residuals
+  hist(resid(ancova_model))
+  qqnorm(resid(ancova_model))
+  qqline(resid(ancova_model))
+  
+  # Shapiro-Wilk test for Normality
+  cat("Shapiro-Wilk test for normality:\n")
+  print(shapiro.test(resid(ancova_model)))
+  
+  # Check Independence of Residuals: Plot autocorrelation plot (ACF)
+  acf(resid(ancova_model))
+  
+  # Calculate leverage
+  leverage <- hatvalues(ancova_model)
+  
+  # Calculate Cook's distance
+  cook_distance <- cooks.distance(ancova_model)
+  
+  # Identify influential points based on Cook's distance
+  influential_points <- which(cook_distance > 4/nrow(GZMCore))  # Change the threshold as needed
+  
+  # Print the indices of influential points
+  cat("Influential points based on Cook's distance:", influential_points, "\n")
+  
+  # Plot residuals vs. leverage with influential points highlighted
+  plot(ancova_model, which = 5)
+  abline(h = 4/nrow(GZMCore), col = "red", lty = 2)  # Add threshold line
+  points(leverage, residuals(ancova_model), col = ifelse(cook_distance > 4/nrow(GZMCore), "red", "black"))
+  
+  # Add a separator for clarity
+  cat("\n")
+}
+```
+
+## ANCOVAS
+
+### Attraction
+
+```{r ancova m1, include=TRUE}
+# Initialise lists for storing results
+ancova_models <- list()
+adjusted_means <- list()
+
+# Model for Attraction
+m1 <- lm(MAttractionTEXT ~ IdentitySexAnalysis + SchoolYear + GenderGroup + SexualityGroup + RaceAnalysis + IdentityDisability + IdentityNeuro + ReligionDemog + AgeCurrent + RPDS, data = GZMCore)
+
+# ANCOVA for the model
+mt1 <- anova(m1)
+print(mt1)
+
+# Effect sizes
+eta_sq <- eta_squared(mt1, partial = TRUE)
+print(eta_sq)
+
+# List of categorical predictors for which you want to test
+predictors <- c("IdentitySexAnalysis", "SchoolYear", "GenderGroup", "SexualityGroup", "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+
+# Perform pairwise comparisons for each predictor
+for(pred in predictors) {
+  cat("\n\nPost hoc comparisons for:", pred, "\n")
+  
+  # Estimate marginal means for the predictor
+  emm <- emmeans(m1, specs = pred)
+  
+  # Perform pairwise comparisons
+  comp <- contrast(emm, method = "pairwise", adjust = "tukey")
+  summary_comp <- summary(comp)
+  
+  print(summary_comp)
+}
+
+# Calculate and print the adjusted means for all predictors
+for (predictor in predictors) {
+    emm_model <- emmeans(m1, specs = predictor)
+    summary_emm <- summary(emm_model)
+    cat("\nAdjusted means for", predictor, ":\n")
+    print(summary_emm, digits = 4)
+}
+```
+
+### Self-Identity
+
+```{r ancova m2, include=TRUE}
+# Initialise lists for storing results
+ancova_models <- list()
+adjusted_means <- list()
+
+# Model for SelfIdentity
+m2 <- lm(MSelfIdentityTEXT ~ IdentitySexAnalysis + SchoolYear + GenderGroup + SexualityGroup + RaceAnalysis + IdentityDisability + IdentityNeuro + ReligionDemog + AgeCurrent + RPDS, data = GZMCore)
+
+# ANCOVA for the model
+mt2 <- anova(m2)
+print(mt2)
+
+# Effect sizes
+eta_sq <- eta_squared(mt2, partial = TRUE)
+print(eta_sq)
+
+# List of categorical predictors for which you want to test
+predictors <- c("IdentitySexAnalysis", "SchoolYear", "GenderGroup", "SexualityGroup", "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+
+# Perform pairwise comparisons for each predictor
+for(pred in predictors) {
+  cat("\n\nPost hoc comparisons for:", pred, "\n")
+  
+  # Estimate marginal means for the predictor
+  emm <- emmeans(m2, specs = pred)
+  
+  # Perform pairwise comparisons
+  comp <- contrast(emm, method = "pairwise", adjust = "tukey")
+  summary_comp <- summary(comp)
+  
+  print(summary_comp)
+}
+
+# Calculate and print the adjusted means for all predictors
+for (predictor in predictors) {
+    emm_model <- emmeans(m2, specs = predictor)
+    summary_emm <- summary(emm_model)
+    cat("\nAdjusted means for", predictor, ":\n")
+    print(summary_emm, digits = 4)
+}
+```
+
+### Same-sex Sexual Activity
+
+```{r ancova m3, include=TRUE}
+# Initialise lists for storing results
+ancova_models <- list()
+adjusted_means <- list()
+
+# Model for Same-sex Sexual Activity
+m3 <- lm(MSAHomTEXT ~ IdentitySexAnalysis + SchoolYear + GenderGroup + SexualityGroup + RaceAnalysis + IdentityDisability + IdentityNeuro + ReligionDemog + AgeCurrent + RPDS, data = GZMCore)
+
+# ANCOVA for the model
+mt3 <- anova(m3)
+print(mt3)
+
+# Effect sizes
+eta_sq <- eta_squared(mt3, partial = TRUE)
+print(eta_sq)
+
+# List of categorical predictors for which you want to test
+predictors <- c("IdentitySexAnalysis", "SchoolYear", "GenderGroup", "SexualityGroup", "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+
+# Perform pairwise comparisons for each predictor
+for(pred in predictors) {
+  cat("\n\nPost hoc comparisons for:", pred, "\n")
+  
+  # Estimate marginal means for the predictor
+  emm <- emmeans(m3, specs = pred)
+  
+  # Perform pairwise comparisons
+  comp <- contrast(emm, method = "pairwise", adjust = "tukey")
+  summary_comp <- summary(comp)
+  
+  print(summary_comp)
+}
+
+# Calculate and print the adjusted means for all predictors
+for (predictor in predictors) {
+    emm_model <- emmeans(m3, specs = predictor)
+    summary_emm <- summary(emm_model)
+    cat("\nAdjusted means for", predictor, ":\n")
+    print(summary_emm, digits = 4)
+}
+```
+
+### Opposite-sex Sexual Activity
+
+```{r ancova m4, include=TRUE}
+# Initialise lists for storing results
+ancova_models <- list()
+adjusted_means <- list()
+
+# Model for Opposite-sex Sexual Activity
+m4 <- lm(MSAHetTEXT ~ IdentitySexAnalysis + SchoolYear + GenderGroup + SexualityGroup + RaceAnalysis + IdentityDisability + IdentityNeuro + ReligionDemog + AgeCurrent + RPDS, data = GZMCore)
+
+# ANCOVA for the model
+mt4 <- anova(m4)
+print(mt4)
+
+# Effect sizes
+eta_sq <- eta_squared(mt4, partial = TRUE)
+print(eta_sq)
+
+# List of categorical predictors for which you want to test
+predictors <- c("IdentitySexAnalysis", "SchoolYear", "GenderGroup", "SexualityGroup", "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+
+# Perform pairwise comparisons for each predictor
+for(pred in predictors) {
+  cat("\n\nPost hoc comparisons for:", pred, "\n")
+  
+  # Estimate marginal means for the predictor
+  emm <- emmeans(m4, specs = pred)
+  
+  # Perform pairwise comparisons
+  comp <- contrast(emm, method = "pairwise", adjust = "tukey")
+  summary_comp <- summary(comp)
+  
+  print(summary_comp)
+}
+
+# Calculate and print the adjusted means for all predictors
+for (predictor in predictors) {
+    emm_model <- emmeans(m4, specs = predictor)
+    summary_emm <- summary(emm_model)
+    cat("\nAdjusted means for", predictor, ":\n")
+    print(summary_emm, digits = 4)
+}
+```
+
+### Same-sex Relationship
+
+```{r ancova m5, include=TRUE}
+# Initialise lists for storing results
+ancova_models <- list()
+adjusted_means <- list()
+
+# Model for Same-sex Relationship
+m5 <- lm(MRHomTEXT ~ IdentitySexAnalysis + SchoolYear + GenderGroup + SexualityGroup + RaceAnalysis + IdentityDisability + IdentityNeuro + ReligionDemog + AgeCurrent + RPDS, data = GZMCore)
+
+# ANCOVA for the model
+mt5 <- anova(m5)
+print(mt5)
+
+# Effect sizes
+eta_sq <- eta_squared(mt5, partial = TRUE)
+print(eta_sq)
+
+# List of categorical predictors for which you want to test
+predictors <- c("IdentitySexAnalysis", "SchoolYear", "GenderGroup", "SexualityGroup", "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+
+# Perform pairwise comparisons for each predictor
+for(pred in predictors) {
+  cat("\n\nPost hoc comparisons for:", pred, "\n")
+  
+  # Estimate marginal means for the predictor
+  emm <- emmeans(m5, specs = pred)
+  
+  # Perform pairwise comparisons
+  comp <- contrast(emm, method = "pairwise", adjust = "tukey")
+  summary_comp <- summary(comp)
+  
+  print(summary_comp)
+}
+
+# Calculate and print the adjusted means for all predictors
+for (predictor in predictors) {
+    emm_model <- emmeans(m5, specs = predictor)
+    summary_emm <- summary(emm_model)
+    cat("\nAdjusted means for", predictor, ":\n")
+    print(summary_emm, digits = 4)
+}
+```
+
+### Opposite-sex Relationship
+
+```{r ancova m6, include=TRUE}
+# Initialise lists for storing results
+ancova_models <- list()
+adjusted_means <- list()
+
+# Model for Opposite-sex Relationship
+m6 <- lm(MRHetTEXT ~ IdentitySexAnalysis + SchoolYear + GenderGroup + SexualityGroup + RaceAnalysis + IdentityDisability + IdentityNeuro + ReligionDemog + AgeCurrent + RPDS, data = GZMCore)
+
+# ANCOVA for the model
+mt6 <- anova(m6)
+print(mt6)
+
+# Effect sizes
+eta_sq <- eta_squared(mt6, partial = TRUE)
+print(eta_sq)
+
+# List of categorical predictors for which you want to test
+predictors <- c("IdentitySexAnalysis", "SchoolYear", "GenderGroup", "SexualityGroup", "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+
+# Perform pairwise comparisons for each predictor
+for(pred in predictors) {
+  cat("\n\nPost hoc comparisons for:", pred, "\n")
+  
+  # Estimate marginal means for the predictor
+  emm <- emmeans(m6, specs = pred)
+  
+  # Perform pairwise comparisons
+  comp <- contrast(emm, method = "pairwise", adjust = "tukey")
+  summary_comp <- summary(comp)
+  
+  print(summary_comp)
+}
+
+# Calculate and print the adjusted means for all predictors
+for (predictor in predictors) {
+    emm_model <- emmeans(m6, specs = predictor)
+    summary_emm <- summary(emm_model)
+    cat("\nAdjusted means for", predictor, ":\n")
+    print(summary_emm, digits = 4)
+}
+```
+
+### First disclosure
+
+```{r ancova m7, include=TRUE}
+# Initialise lists for storing results
+ancova_models <- list()
+adjusted_means <- list()
+
+# Model for first disclosure
+m7 <- lm(MComingOutTEXT ~ IdentitySexAnalysis + SchoolYear + GenderGroup + SexualityGroup + RaceAnalysis + IdentityDisability + IdentityNeuro + ReligionDemog + AgeCurrent + RPDS, data = GZMCore)
+
+# ANCOVA for the model
+mt7 <- anova(m7)
+print(mt7)
+
+# Effect sizes
+eta_sq <- eta_squared(mt7, partial = TRUE)
+print(eta_sq)
+
+# List of categorical predictors for which you want to test
+predictors <- c("IdentitySexAnalysis", "SchoolYear", "GenderGroup", "SexualityGroup", "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+
+# Perform pairwise comparisons for each predictor
+for(pred in predictors) {
+  cat("\n\nPost hoc comparisons for:", pred, "\n")
+  
+  # Estimate marginal means for the predictor
+  emm <- emmeans(m7, specs = pred)
+  
+  # Perform pairwise comparisons
+  comp <- contrast(emm, method = "pairwise", adjust = "tukey")
+  summary_comp <- summary(comp)
+  
+  print(summary_comp)
+}
+
+# Calculate and print the adjusted means for all predictors
+for (predictor in predictors) {
+    emm_model <- emmeans(m7, specs = predictor)
+    summary_emm <- summary(emm_model)
+    cat("\nAdjusted means for", predictor, ":\n")
+    print(summary_emm, digits = 4)
+}
+```
+
+### Coming out to immedaite family
+
+```{r ancova m8, include=TRUE}
+# Initialise lists for storing results
+ancova_models <- list()
+adjusted_means <- list()
+
+# Model for coming out to immedaite family
+m8 <- lm(MComingOutFamily4TEXT ~ IdentitySexAnalysis + SchoolYear + GenderGroup + SexualityGroup + RaceAnalysis + IdentityDisability + IdentityNeuro + ReligionDemog + AgeCurrent + RPDS, data = GZMCore)
+
+# ANCOVA for the model
+mt8 <- anova(m8)
+print(mt8)
+
+# Effect sizes
+eta_sq <- eta_squared(mt8, partial = TRUE)
+print(eta_sq)
+
+# List of categorical predictors for which you want to test
+predictors <- c("IdentitySexAnalysis", "SchoolYear", "GenderGroup", "SexualityGroup", "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+
+# Perform pairwise comparisons for each predictor
+for(pred in predictors) {
+  cat("\n\nPost hoc comparisons for:", pred, "\n")
+  
+  # Estimate marginal means for the predictor
+  emm <- emmeans(m8, specs = pred)
+  
+  # Perform pairwise comparisons
+  comp <- contrast(emm, method = "pairwise", adjust = "tukey")
+  summary_comp <- summary(comp)
+  
+  print(summary_comp)
+}
+
+# Calculate and print the adjusted means for all predictors
+for (predictor in predictors) {
+    emm_model <- emmeans(m8, specs = predictor)
+    summary_emm <- summary(emm_model)
+    cat("\nAdjusted means for", predictor, ":\n")
+    print(summary_emm, digits = 4)
+}
+```

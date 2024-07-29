@@ -1,0 +1,263 @@
+---
+title: "Mplus BCH Analysis"
+author: "WWar"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    css: styles.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+load("C:file path here/GZMCore.RData")
+set.seed(123)
+```
+
+```{r packages}
+library(MplusAutomation)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(tidyselect)
+```
+
+# Set Up
+
+```{r variable prep, include=TRUE}
+# Re-name milestone variables for interpretability
+GZMCore <- GZMCore %>%
+  rename(
+    m1 = MAttractionTEXT,
+    m2 = MSelfIdentityTEXT,
+    m3 = MSAHomTEXT,
+    m4 = MSAHetTEXT,
+    m5 = MRHomTEXT,
+    m6 = MRHetTEXT,
+    m7 = MComingOutTEXT,
+    m8 = MComingOutFamily4TEXT
+)
+
+# Re-name binary milestone variables for interpretability
+GZMCore <- GZMCore %>%
+  rename(
+    bm1 = MAttraction,
+    bm2 = MSelfIdentity,
+    bm3 = MSAHom,
+    bm4 = MSAHet,
+    bm5 = MRHom,
+    bm6 = MRHet,
+    bm7 = MComingOut,
+    bm8 = MComingOutFamily4
+  ) %>%
+  mutate(
+    across(c(bm1, bm2, bm3, bm4, bm5, bm6, bm7, bm8), ~ if_else(is.na(.) | . == 2, 0, .)) # re-code 2 and missing to be 0 indicating a milestone was not achieved - Mplus cannot have missing data that is not accounted for. The coding of missing binary milestones as not achieved should not matter as the age data (m1-m8) that it matches to will still be missing and is coded as -99 in.
+)
+
+GZMCore <- GZMCore %>%
+  rename(
+    c1 = AgeCurrent,
+    c2 = RPDS,
+  )
+
+GZMCore <- GZMCore %>%
+  rename(
+    o1 = SMA_RSS,
+    o2 = IntHom,
+    o3 = DERS,
+    o4 = SASI,
+  )
+```
+
+```{r mplus outcome syntax}
+mplusSyntax <- ("
+TITLE: Milestones LPA Full Sample - 4 Profile;
+DATA: 
+  FILE = 'model1.dat';
+VARIABLE: 
+  NAMES = m1 m2 m3 m4 m5 m6 m7 m8 bm1 bm2 bm3 bm4 bm5 bm6 bm7 bm8;
+  CENSORED = m1 m2 m3 m4 m5 m6 m7 m8 (a);
+  USEVARIABLES = m1 m2 m3 m4 m5 m6 m7 m8 bm1 bm2 bm3 bm4 bm5 bm6 bm7 bm8;
+  MISSING = all (-99);
+  CLASSES = c(4);
+ANALYSIS: 
+  TYPE = MIXTURE;
+  ESTIMATOR = MLR;
+  PROCESSORS = 6;
+  ALGORITHM = INTEGRATION;
+  INTEGRATION = MONTECARLO (500);
+MODEL:
+  %OVERALL% 
+    bm1 ON m1;
+    bm2 ON m2;
+    bm3 ON m3;
+    bm4 ON m4;
+    bm5 ON m5;
+    bm6 ON m6;
+    bm7 ON m7;
+    bm8 ON m8;
+  %c#1%
+  %c#2%
+  %c#3%
+  %c#4%
+OUTPUT:
+  SAMPSTAT;
+  TECH11;
+  TECH14;
+SAVEDATA:
+  FILE IS bch.dat;
+  SAVE = bchweights;
+")
+
+writeLines(mplusSyntax, con = "step1.inp")
+```
+
+```{r run mplus}
+# Run the mplus analysis
+runModels("step1.inp")
+step1 <- readModels("step1.out")
+```
+
+```{r new data set with BCH}
+# Define the widths for each column based on the Mplus specification
+widths <- rep(10, 20)  
+
+# Read the fixed-width format file
+bch_probs <- read.fwf('bch.dat', widths = widths, header = FALSE, colClasses = "character")
+
+# Assign column names based on the Mplus specification
+colnames(bch_probs) <- c("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", 
+                         "BM1", "BM2", "BM3", "BM4", "BM5", "BM6", "BM7", "BM8",
+                         "BCHW1", "BCHW2", "BCHW3", "BCHW4")
+
+# Replace asterisks with NA to indicate missing values
+bch_probs[bch_probs == "*"] <- NA
+
+# Convert the data frame from character to numeric, as read.fwf imports as 'factor' or 'character' by default
+bch_probs[] <- lapply(bch_probs, function(x) as.numeric(as.character(x)))
+
+GZMCore <- cbind(GZMCore, bch_probs[, c("BCHW1", "BCHW2", "BCHW3", "BCHW4")])
+```
+
+```{r new data set}
+# Create new data set for Mplus
+MData <- GZMCore %>%
+  select(
+    m1, m2, m3, m4, m5, m6, m7, m8,       # Selecting milestone text variables
+    bm1, bm2, bm3, bm4, bm5, bm6, bm7, bm8, # Selecting binary milestone variables
+    c1, c2,                                  # Selecting covariates
+    o1, o2, o3, o4,                           # Selecting outcome variables
+    BCHW1, BCHW2, BCHW3, BCHW4,                # BCH weights
+  )
+
+# Code missing data as -99
+MData <- MData %>%
+  mutate(across(everything(), ~ ifelse(is.na(.), -99, .)))
+
+# Save data file
+prepareMplusData(MData, "step3.dat")
+```
+
+```{r mplus outcome syntax}
+mplusSyntax <- ("
+TITLE: BCH Method with Covariates and Distal Outcomes;
+DATA: 
+  FILE = 'step3.dat';
+VARIABLE: 
+  NAMES = m1-m8 bm1-bm8 c1-c2 o1-o4 bchc1-bchc4;
+  USEVARIABLES = c1-c2 o1-o4 bchc1-bchc4;
+  MISSING = all (-99);
+  CLASSES = c(4);
+  TRAINING = bchc1-bchc4(bch);
+ANALYSIS: 
+  TYPE = MIXTURE;
+  ESTIMATOR = MLR;
+  PROCESSORS = 6;
+MODEL:
+%OVERALL%
+  o1 ON c1 c2;
+  o2 ON c1 c2;
+  o3 ON c1 c2;
+  o4 ON c1 c2;
+
+%c#1%
+  [o1] (i1);
+  [o2] (i2);
+  [o3] (i3);
+  [o4] (i4);
+
+%c#2%
+  [o1] (i5);
+  [o2] (i6);
+  [o3] (i7);
+  [o4] (i8);
+
+%c#3%
+  [o1] (i9);
+  [o2] (i10);
+  [o3] (i11);
+  [o4] (i12);
+
+%c#4%
+  [o1] (i13);
+  [o2] (i14);
+  [o3] (i15);
+  [o4] (i16);
+MODEL CONSTRAINT:
+  ! Differences in intercepts of o1 across classes
+  NEW (diff_o1_c1_c2, diff_o1_c1_c3, diff_o1_c1_c4, 
+    diff_o1_c2_c3, diff_o1_c2_c4, diff_o1_c3_c4);
+  diff_o1_c1_c2 = i1 - i5;  ! Class 1 vs Class 2
+  diff_o1_c1_c3 = i1 - i9;  ! Class 1 vs Class 3
+  diff_o1_c1_c4 = i1 - i13; ! Class 1 vs Class 4
+  diff_o1_c2_c3 = i5 - i9;  ! Class 2 vs Class 3
+  diff_o1_c2_c4 = i5 - i13; ! Class 2 vs Class 4
+  diff_o1_c3_c4 = i9 - i13; ! Class 3 vs Class 4
+
+  ! Differences in intercepts of o2 across classes
+  NEW (diff_o2_c1_c2, diff_o2_c1_c3, diff_o2_c1_c4, 
+    diff_o2_c2_c3, diff_o2_c2_c4, diff_o2_c3_c4);
+  diff_o2_c1_c2 = i2 - i6;
+  diff_o2_c1_c3 = i2 - i10;
+  diff_o2_c1_c4 = i2 - i14;
+  diff_o2_c2_c3 = i6 - i10;
+  diff_o2_c2_c4 = i6 - i14;
+  diff_o2_c3_c4 = i10 - i14;
+
+  ! Differences in intercepts of o3 across classes
+  NEW (diff_o3_c1_c2, diff_o3_c1_c3, diff_o3_c1_c4, 
+    diff_o3_c2_c3, diff_o3_c2_c4, diff_o3_c3_c4);
+  diff_o3_c1_c2 = i3 - i7;
+  diff_o3_c1_c3 = i3 - i11;
+  diff_o3_c1_c4 = i3 - i15;
+  diff_o3_c2_c3 = i7 - i11;
+  diff_o3_c2_c4 = i7 - i15;
+  diff_o3_c3_c4 = i11 - i15;
+
+  ! Differences in intercepts of o4 across classes
+  NEW (diff_o4_c1_c2, diff_o4_c1_c3, diff_o4_c1_c4, 
+    diff_o4_c2_c3, diff_o4_c2_c4, diff_o4_c3_c4);
+  diff_o4_c1_c2 = i4 - i8;
+  diff_o4_c1_c3 = i4 - i12;
+  diff_o4_c1_c4 = i4 - i16;
+  diff_o4_c2_c3 = i8 - i12;
+  diff_o4_c2_c4 = i8 - i16;
+  diff_o4_c3_c4 = i12 - i16;
+OUTPUT:
+  TECH1;
+  TECH8;
+  TECH4;
+  CINTERVAL;
+")
+
+writeLines(mplusSyntax, con = "outcome.inp")
+```
+
+```{r run mplus}
+# Run the mplus analysis
+runModels("outcome.inp")
+step3 <- readModels("outcome.out")
+```
+

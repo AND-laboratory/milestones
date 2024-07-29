@@ -1,0 +1,865 @@
+---
+title: "Mplus LPA Analysis"
+author: "WWar"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    css: styles.css
+---
+
+<a name="top"></a>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+load("C:file path here/GZMCore.RData")
+set.seed(123)
+```
+
+```{r packages}
+library(MplusAutomation)
+library(texreg)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+```
+
+```{r css-and-js, echo=FALSE, results='asis'}
+cat('
+<style>
+/* Enable smooth scrolling */
+@media screen and (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* Style the button */
+.top-link {
+  transition: all .25s ease-in-out;
+  position: fixed; /* This keeps the button in a fixed position relative to the viewport */
+  bottom: 20px; /* Distance from the bottom of the viewport */
+  right: 20px; /* Distance from the right of the viewport */
+  display: inline-flex;
+  color: #000000;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  padding: 8px; /* Adjust padding to make the button larger or smaller */
+  width: 40px; /* Width of the button */
+  height: 40px; /* Height of the button */
+  background-color: #F8F8F8;
+  text-decoration: none; /* Removes underline from the link */
+  font-size: 24px; /* Size of the arrow or text inside the button */
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3); /* Optional: adds shadow for better visibility */
+}
+
+/* Initially hide the link and show on scroll */
+.top-link.hide {
+  display: none;
+}</style>
+')
+```
+
+# Set Up
+
+```{r variable prep, include=TRUE}
+# Create a new variable "RaceAnalysis" based on conditions where White are retained and a POC race value is created (Other races = 1)
+GZMCore <- GZMCore %>%
+  mutate(RaceAnalysis = case_when(
+    RaceDemog == 6 ~ "White",
+    RaceDemog %in% c(1, 2, 3, 4, 5, 7, 9) ~ "POC",
+    RaceDemog == 8 ~ as.factor(NA) # Recode value 8 as NA
+  )) %>%
+  mutate(RaceAnalysis = factor(RaceAnalysis))
+
+# Set demographic values for output interpretation
+GZMCore <- GZMCore %>%
+  mutate(
+    IdentitySex = factor(IdentitySex, levels = c(1, 2, 3, 5), labels = c("male", "female", "intersex", "prefer not to say")),
+    SchoolYear = factor(SchoolYear, levels = c(1, 2, 3), labels = c("In highschool", "Not in highschool", "Prefer not to say")),
+    GenderGroup = factor(GenderGroup, levels = c(1, 2, 3, 4, 5), labels = c("Cis male", "Cis female", "Gender expansive", "Transfem", "Transmasc")),
+    SexualityGroup = factor(SexualityGroup, levels = c(1, 2, 3, 4), labels = c("Monosexual", "Plurisexual", "Asexual spectrum", "Queer or questioning")),
+    IdentityDisability = factor(IdentityDisability, levels = c(4, 5, 6), labels = c("Identified", "Did not identify", "Did not answer")),
+    IdentityNeuro = factor(IdentityNeuro, levels = c(1, 2, 3), labels = c("Identified", "Did not identify", "Did not answer")),
+    ReligionDemog = factor(ReligionDemog, levels = c(1, 2, 3), labels = c("Is religious", "Is not religious", "Did not answer"))
+  )
+
+# Re-name milestone variables for interpretability
+GZMCore <- GZMCore %>%
+  rename(
+    m1 = MAttractionTEXT,
+    m2 = MSelfIdentityTEXT,
+    m3 = MSAHomTEXT,
+    m4 = MSAHetTEXT,
+    m5 = MRHomTEXT,
+    m6 = MRHetTEXT,
+    m7 = MComingOutTEXT,
+    m8 = MComingOutFamily4TEXT
+)
+
+# Before coding binary milestones I create a second data set with missing binary milestones left to calculate the weighted probabilities later
+GZMCoreWP <- GZMCore %>%
+  rename(
+    bm1 = MAttraction,
+    bm2 = MSelfIdentity,
+    bm3 = MSAHom,
+    bm4 = MSAHet,
+    bm5 = MRHom,
+    bm6 = MRHet,
+    bm7 = MComingOut,
+    bm8 = MComingOutFamily4
+)
+
+# Re-name binary milestone variables for interpretability
+GZMCore <- GZMCore %>%
+  rename(
+    bm1 = MAttraction,
+    bm2 = MSelfIdentity,
+    bm3 = MSAHom,
+    bm4 = MSAHet,
+    bm5 = MRHom,
+    bm6 = MRHet,
+    bm7 = MComingOut,
+    bm8 = MComingOutFamily4
+  ) %>%
+  mutate(
+    across(c(bm1, bm2, bm3, bm4, bm5, bm6, bm7, bm8), ~ if_else(is.na(.) | . == 2, 0, .)) # re-code 2 and missing to be 0 indicating a milestone was not achieved - Mplus cannot have missing data that is not accounted for. The coding of missing binary milestones as not achieved should not matter as the age data (m1-m8) that it matches to will still be missing and is coded as -99 in.
+)
+```
+
+I have recoded the demographic variables for better interpretability and the milestones for use in Mplus as short character names are ideal when using multiple variables. I have run the Mplus analyses elsewhere but will draw the data into this document for the purposes of the sensitivity analysis and to outliner what was done. To run the analyses in Mplus, each data set was subset so that it only included the necessary variables - this is because you have to manually define all variables in a data set in Mplus and then specify which ones are to be used. The key thing to remember is the data contain both the age milestone variables (m1-m8) and the binary indicators of milestone achievement (bm1-bm8).
+
+# Profile Fit
+
+## Mplus Syntax
+
+```{r Mplus prep, include=TRUE}
+# Set milestone age variables
+milestones <- c("m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8")
+binarymilestones <- c("bm1", "bm2", "bm3", "bm4", "bm5", "bm6", "bm7", "bm8")
+seqdata <- GZMCore[, c(milestones)]
+
+# Function to clean NA, NaN, and Inf values
+clean_data <- function(x) {
+  x[is.na(x) | is.nan(x) | is.infinite(x)] <- -99 # re-code missing as -99 as this seems the most logical given the age data. This was applied to age milestones (m1-m8) not binary data (bm1-bm8)
+  return(x)
+}
+
+# Apply the function to each column
+seqdata <- data.frame(lapply(seqdata, clean_data))
+
+# Add in indicators
+seqdata <- bind_cols(seqdata, GZMCore %>% select(all_of(binarymilestones)))
+
+# Save data file
+prepareMplusData(seqdata, "model1.dat")
+```
+
+To begin, I estimated a 1 to 5-profile model using a loop function to generate the input code for each unique number of profiles. Then, using MplusAutomation I sequentially ran the 1 to 5 profile model. The 5-profile model took 40 hours to complete (my computer was crying).
+
+```{r Mplus profiles 1:5, include=TRUE}
+for (i in 1:5) { 
+  mplusSyntax <- sprintf("
+TITLE: Milestones LPA Full Sample - %d Profile;
+DATA: 
+  FILE = 'model1.dat';
+VARIABLE: 
+  NAMES = m1 m2 m3 m4 m5 m6 m7 m8 bm1 bm2 bm3 bm4 bm5 bm6 bm7 bm8;
+  CENSORED = m1 m2 m3 m4 m5 m6 m7 m8 (a);
+  USEVARIABLES = m1 m2 m3 m4 m5 m6 m7 m8 bm1 bm2 bm3 bm4 bm5 bm6 bm7 bm8;
+  MISSING = all (-99);
+  CLASSES = c(%d);
+ANALYSIS: 
+  TYPE = MIXTURE;
+  ESTIMATOR = MLR;
+  PROCESSORS = 6;
+  ALGORITHM = INTEGRATION;
+  INTEGRATION = MONTECARLO (500);
+MODEL:
+  %%OVERALL%% \n", i, i)
+
+  for (k in 1:8) {
+    mplusSyntax <- paste(mplusSyntax, sprintf("    bm%d ON m%d;\n", k, k), sep = "")
+  }
+
+  for (j in 1:i) {
+    mplusSyntax <- paste(mplusSyntax, sprintf("  %%c#%d%%\n", j), sep = "")
+  }
+
+  mplusSyntax <- paste(mplusSyntax, "OUTPUT:
+  SAMPSTAT;
+  TECH11;
+  TECH14;", sep = "")
+
+  fileName <- sprintf("model%d.inp", i)
+  writeLines(mplusSyntax, fileName)
+}
+```
+
+The important components of the input code are:
+
+-   CENSORED: Age milestone data is censored above (a), which is essentially right-censoring indicating that the time-to-event data where an event (milestone achievement) might not have occurred by the end of the study. The integration setting and estimation methods used ensure this is adequately handled in profile estimations.
+
+-   MISSING: Missing data indicating a milestone not being achieved were coded as -99 and FIML was used to utilise the whole data set despite the missing milestones.
+
+-   MLR: Maximum Likelihood estimation with robust standard errors is an estimator robust to non-normality and non-independence of observations. Using this helps ensure estimations are still reliable in the presence of non-normal data.
+
+-   PROCESSORS: This option allows Mplus to use multiple processors for the analysis, facilitating parallel processing to speed up the analysis time. My computer had 8 so I used 6 to help speed up computation times.
+
+-   ALGORITHM: The Montecarlo Integration was actually specified by Mplus based on the data and the model specifications. It would not run unless this was included. The integration point level was set at 500 as this struck a fine balance between allowing for accurate integration and computational intensity / time.
+
+-   MODEL: bmX ON mX sets up the regression model where the binary indicator of milestone achievement (bmX) is predicted by the age at which the milestone was achieved (mX). This means the likelihood of achieving a milestone (bmX = 1) is modeled as depending directly on the age at which the milestone occurs (mX). This captures how early or late achievement of a milestone influences whether it is achieved at the point of data collection (considering the right-censoring).
+
+-   No profile specific configurations were coded as the profiles were/are unknown. Instead it was left open so that the regression relationships were applied universally to all profiles.
+
+## Run Models
+
+```{r run models, include=TRUE}
+runModels("model1.inp")
+runModels("model2.inp")
+runModels("model3.inp")
+runModels("model4.inp")
+runModels("model5.inp")
+```
+
+## Profile Determination
+
+```{r Extract Model Summaries, include=TRUE}
+# Extracting the mplus output files
+output_files1 <- paste0("C:your current wd/model", 1:5, ".out")
+
+# Reading model summaries from the output files
+model_summaries <- lapply(output_files1, function(x) readModels(x, what = "summaries")$summaries)
+```
+
+```{r Compile Fit Indices, include=TRUE}
+# Initialise an empty data frame to store the extracted fit indices
+fit_indices_df <- data.frame(Model = integer(),
+                             AIC = numeric(), 
+                             BIC = numeric(), 
+                             aBIC = numeric(), 
+                             Entropy = numeric(), 
+                             VLMR_PValue = numeric(), 
+                             LMR_PValue = numeric(),
+                             stringsAsFactors = FALSE)
+
+# Loop through each model summary to extract the desired fit indices
+for (i in 1:length(model_summaries)) {
+  model_summary <- model_summaries[[i]]
+  
+  # Correct approach to handle possible NULL values
+  AIC <- if(!is.null(model_summary$AIC)) model_summary$AIC else NA
+  BIC <- if(!is.null(model_summary$BIC)) model_summary$BIC else NA
+  aBIC <- if(!is.null(model_summary$aBIC)) model_summary$aBIC else NA
+  Entropy <- if(!is.null(model_summary$Entropy)) model_summary$Entropy else NA
+  VLMR_PValue <- if(!is.null(model_summary$T11_VLMR_PValue)) model_summary$T11_VLMR_PValue else NA
+  LMR_PValue <- if(!is.null(model_summary$T11_LMR_PValue)) model_summary$T11_LMR_PValue else NA
+  
+  # Create a temporary data frame for the current model's indices
+  temp_df <- data.frame(Model = i,
+                        AIC = AIC, 
+                        BIC = BIC, 
+                        aBIC = aBIC, 
+                        Entropy = Entropy, 
+                        VLMR_PValue = VLMR_PValue, 
+                        LMR_PValue = LMR_PValue,
+                        stringsAsFactors = FALSE)
+  
+  # Append the temporary data frame to the fit_indices_df
+  fit_indices_df <- rbind(fit_indices_df, temp_df)
+}
+
+# Display the compiled fit indices data frame
+print(fit_indices_df)
+```
+
+The 5-profile model seems to provide a slightly better statistical fit to the data based on loglikelihood and AIC, but the BIC was better for the 4-profile model. The stability and replication of the best solution in the 4-profile model are in its favor. In contrast, the 5-profile model's best loglikelihood was not replicated, suggesting potential instability in the solution.
+
+Given the high p-values in the likelihood ratio tests for the 5-profile model, it is questionable whether the fifth class is necessary or interpretable. Also, considering the computational time and the higher complexity without a significant gain in classification quality (as evidenced by entropy), the 4-profile model is more parsimonious and practically preferred. With the 4-profile model chosen, it was run again with the syntax modified so that the class probabilities were saved as a data file alongside the output.
+
+# The 4-Profile Model
+
+## Run the model and save class probabilities
+
+```{r final model, include=TRUE}
+mplusSyntax <- ("
+TITLE: Milestones LPA Full Sample - 4 Profile;
+DATA: 
+  FILE = 'model1.dat';
+VARIABLE: 
+  NAMES = m1 m2 m3 m4 m5 m6 m7 m8 bm1 bm2 bm3 bm4 bm5 bm6 bm7 bm8;
+  CENSORED = m1 m2 m3 m4 m5 m6 m7 m8 (a);
+  USEVARIABLES = m1 m2 m3 m4 m5 m6 m7 m8 bm1 bm2 bm3 bm4 bm5 bm6 bm7 bm8;
+  MISSING = all (-99);
+  CLASSES = c(4);
+ANALYSIS: 
+  TYPE = MIXTURE;
+  ESTIMATOR = MLR;
+  PROCESSORS = 6;
+  ALGORITHM = INTEGRATION;
+  INTEGRATION = MONTECARLO (500);
+MODEL:
+  %OVERALL% 
+    bm1 ON m1;
+    bm2 ON m2;
+    bm3 ON m3;
+    bm4 ON m4;
+    bm5 ON m5;
+    bm6 ON m6;
+    bm7 ON m7;
+    bm8 ON m8;
+  %c#1%
+  %c#2%
+  %c#3%
+  %c#4%
+OUTPUT:
+  SAMPSTAT;
+  TECH11;
+  TECH14;
+SAVEDATA:
+  FILE IS class_probabilities.dat;
+  SAVE = CPROB;
+")
+
+writeLines(mplusSyntax, con = "4profile.inp")
+```
+
+```{r run mplus final model}
+# Run the mplus analysis to save the cprob
+runModels("4profile.inp")
+```
+
+## Extracting Class Probabilities
+
+```{r extract class prob, include=TRUE}
+# Define the widths for each column based on the Mplus specification
+widths <- rep(10, 21)  # There are 21 variables, each 10 characters wide
+
+# Read the fixed-width format file
+class_probs <- read.fwf('class_probabilities.dat', widths = widths, header = FALSE)
+
+# Assign column names based on the Mplus specification
+colnames(class_probs) <- c("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", 
+                           "BM1", "BM2", "BM3", "BM4", "BM5", "BM6", "BM7", "BM8",
+                           "CPROB1", "CPROB2", "CPROB3", "CPROB4", "C")
+
+# Replace asterisks with NA to indicate missing values
+class_probs[class_probs == "*"] <- NA
+
+# Convert the data frame from character to numeric, since read.fwf imports as 'factor' by default
+class_probs[] <- lapply(class_probs, function(x) as.numeric(as.character(x)))
+
+# Remove columns not needed
+class_probs <- class_probs[c("CPROB1", "CPROB2", "CPROB3", "CPROB4", "C")]
+
+GZMCore <- cbind(GZMCore, class_probs)
+GZMCoreWP <- cbind(GZMCoreWP, class_probs)
+```
+
+```{r weighted prob, include=TRUE}
+# Recode binary milestone variables: 1 to 0, 2 to 1, leave NA as is
+GZMCoreWP <- GZMCoreWP %>%
+  mutate(across(starts_with("bm"), ~ ifelse(.x == 1, 0, ifelse(.x == 2, 1, NA))))
+
+#Compute Weighted Proportions of Non-Achievement
+GZMCore_Weighted <- GZMCoreWP %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB1, .names = "weighted_{.col}_profile1")) %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB2, .names = "weighted_{.col}_profile2")) %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB3, .names = "weighted_{.col}_profile3")) %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB4, .names = "weighted_{.col}_profile4"))
+
+# Custom milestone names
+variable_names <- c(m1 = "Attraction", m2 = "Self-Identity", m3 = "S_S Sexual Activity", m4 = "O_S Sexual Activity",
+                    m5 = "S_S Relationship", m6 = "O_S Relationship", m7 = "First Disclosure", m8 = "Disclosure (Family)")
+
+# List of demographic variables
+demographic_variables <- c("IdentitySex", "SchoolYear", "GenderGroup", "SexualityGroup", 
+                           "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+```
+
+```{r profile descriptives, include=TRUE}
+# Calculate total counts and percentages for each profile
+profile_summary <- GZMCore_Weighted %>%
+  group_by(C) %>%
+  summarise(
+    TotalCount = n(),  # Count the number of entries in each profile
+    Percentage = (TotalCount / nrow(GZMCore_Weighted)) * 100  # Calculate percentage of the total sample
+  ) %>%
+  ungroup() %>%
+  arrange(C)  
+
+# Print the results
+print(profile_summary)
+```
+
+### Class Probabilities
+
+With the class probabilities and profile membership assigned to participants in the data set, the weighted proportions of non-achievement were calculated to integrate the uncertainty of class membership into the sequence evaluation of milestone achievement. This indicates how often milestones are not achieved within each of the 4-profiles, factoring in each individual's probability of belonging to a specific profile.
+
+Weighting the non-achievement by the posterior probabilities allows for each individual's data to contribute to the profile analysis in proportion to their likelihood of belonging to each profile. For each milestone, a weighted non-achievement score was calculated for each individual by multiplying the binary non-achievement indicator by the posterior probability of belonging to each profile. This calculation was done for all milestones across all profiles. To do this the indicators were reversed so that achievement was 0 and non-achievement was 1. The individual weighted scores were then summed across the data for each profile and milestone to get the overall weighted proportion of non-achievement.
+
+## Plotting the Classes
+
+### Profile 1 Full Sample
+
+```{r graph probs 1}
+# Step 1: Subset Data for Profile 1
+profile1_data <- GZMCore_Weighted %>% filter(C == 1)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages <- profile1_data %>%
+  summarise(
+    m1 = mean(m1, na.rm = TRUE),
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile1_data %>%
+  summarise(
+    m1 = sd(m1, na.rm = TRUE),
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement
+mean_weighted_probs_profile1 <- profile1_data %>%
+  summarise(
+    weighted_bm1_profile1 = mean(weighted_bm1_profile1, na.rm = TRUE) * 100,
+    weighted_bm2_profile1 = mean(weighted_bm2_profile1, na.rm = TRUE) * 100,
+    weighted_bm3_profile1 = mean(weighted_bm3_profile1, na.rm = TRUE) * 100,
+    weighted_bm4_profile1 = mean(weighted_bm4_profile1, na.rm = TRUE) * 100,
+    weighted_bm5_profile1 = mean(weighted_bm5_profile1, na.rm = TRUE) * 100,
+    weighted_bm6_profile1 = mean(weighted_bm6_profile1, na.rm = TRUE) * 100,
+    weighted_bm7_profile1 = mean(weighted_bm7_profile1, na.rm = TRUE) * 100,
+    weighted_bm8_profile1 = mean(weighted_bm8_profile1, na.rm = TRUE) * 100
+  ) %>%
+  # Pivot the data to a long format
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("_profile1", "", Milestone),  # Clean up the milestone names
+    # Create a formatted label for plotting
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting
+plot_data <- tibble(
+  Milestone = names(mean_ages),
+  MeanAge = unlist(mean_ages),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile1$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile1$Labels
+)
+
+# Convert milestone codes to names using the custom names
+plot_data$Milestone <- variable_names[plot_data$Milestone]
+
+# Sort plot data by MeanAge to display the milestones in the order of their occurrence
+plot_data <- plot_data %>%
+  mutate(Milestone = factor(Milestone, levels = Milestone[order(MeanAge)])) %>%
+  arrange(MeanAge)
+
+# Generate the plot
+ggplot(plot_data, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') +  # Ensure the milestones are connected by a line
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) +  # Adjust the y-offset as needed
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 1: Mean Age and Probability of Non-Achievement") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r profile 1 demog}
+calculate_demographics <- function(data, demographic, cluster_membership) {
+  # Calculate the demographics based on cluster membership
+  demographic_summary <- data %>%
+    group_by(!!sym(demographic)) %>%  # Using sym and !! for tidy evaluation
+    summarise(
+      Count = sum(C == cluster_membership, na.rm = TRUE),  # Counting occurrences of the cluster
+      Percentage = (Count / 490) * 100  # Percentage calculation based on the group total
+    ) %>%
+    ungroup() %>%
+    arrange(desc(Count))  # Sorting by count descending for better visibility
+  
+  return(demographic_summary)
+}
+
+# Loop through demographic variables and calculate count and percentage for each for Cluster 1
+results_list <- list()
+for(demographic in demographic_variables) {
+  results_list[[demographic]] <- calculate_demographics(GZMCore_Weighted, demographic, 1)
+}
+
+# Print out the results for each demographic variable
+for(demographic in names(results_list)) {
+  cat("Results for", demographic, ":\n")
+  print(results_list[[demographic]])
+}
+```
+
+### Profile 2 Full Sample
+
+```{r graph probs 2}
+# Step 1: Subset Data for Profile 2
+profile2_data <- GZMCore_Weighted %>% filter(C == 2)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages2 <- profile2_data %>%
+  summarise(
+    m1 = mean(m1, na.rm = TRUE),
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile2_data %>%
+  summarise(
+    m1 = sd(m1, na.rm = TRUE),
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement
+mean_weighted_probs_profile2 <- profile2_data %>%
+  summarise(
+    weighted_bm1_profile2 = mean(weighted_bm1_profile2, na.rm = TRUE) * 100,
+    weighted_bm2_profile2 = mean(weighted_bm2_profile2, na.rm = TRUE) * 100,
+    weighted_bm3_profile2 = mean(weighted_bm3_profile2, na.rm = TRUE) * 100,
+    weighted_bm4_profile2 = mean(weighted_bm4_profile2, na.rm = TRUE) * 100,
+    weighted_bm5_profile2 = mean(weighted_bm5_profile2, na.rm = TRUE) * 100,
+    weighted_bm6_profile2 = mean(weighted_bm6_profile2, na.rm = TRUE) * 100,
+    weighted_bm7_profile2 = mean(weighted_bm7_profile2, na.rm = TRUE) * 100,
+    weighted_bm8_profile2 = mean(weighted_bm8_profile2, na.rm = TRUE) * 100
+  ) %>%
+  # Pivot the data to a long format
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("_profile2", "", Milestone),  # Clean up the milestone names
+    # Create a formatted label for plotting
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting
+plot_data2 <- tibble(
+  Milestone = names(mean_ages2),
+  MeanAge = unlist(mean_ages2),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile2$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile2$Labels
+)
+
+# Convert milestone codes to names using the custom names
+plot_data2$Milestone <- variable_names[plot_data2$Milestone]
+
+# Sort plot data by MeanAge to display the milestones in the order of their occurrence
+plot_data2 <- plot_data2 %>%
+  mutate(Milestone = factor(Milestone, levels = Milestone[order(MeanAge)])) %>%
+  arrange(MeanAge)
+
+# Generate the plot
+ggplot(plot_data2, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') +  # Ensure the milestones are connected by a line
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) +  # Adjust the y-offset as needed
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 2: Mean Age and Probability of Non-Achievement") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r profile 2 demog}
+# Loop through demographic variables and calculate count and percentage for each for Cluster 2
+results_list <- list()
+for(demographic in demographic_variables) {
+  results_list[[demographic]] <- calculate_demographics(GZMCore_Weighted, demographic, 2)
+}
+
+# Print out the results for each demographic variable
+for(demographic in names(results_list)) {
+  cat("Results for", demographic, ":\n")
+  print(results_list[[demographic]])
+}
+```
+
+### Profile 3 Full Sample
+
+```{r graph probs 3}
+# Step 1: Subset Data for Profile 3
+profile3_data <- GZMCore_Weighted %>% filter(C == 3)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages3 <- profile3_data %>%
+  summarise(
+    m1 = mean(m1, na.rm = TRUE),
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile3_data %>%
+  summarise(
+    m1 = sd(m1, na.rm = TRUE),
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement for Profile 3
+mean_weighted_probs_profile3 <- profile3_data %>%
+  summarise(
+    weighted_bm1_profile3 = mean(weighted_bm1_profile3, na.rm = TRUE) * 100,
+    weighted_bm2_profile3 = mean(weighted_bm2_profile3, na.rm = TRUE) * 100,
+    weighted_bm3_profile3 = mean(weighted_bm3_profile3, na.rm = TRUE) * 100,
+    weighted_bm4_profile3 = mean(weighted_bm4_profile3, na.rm = TRUE) * 100,
+    weighted_bm5_profile3 = mean(weighted_bm5_profile3, na.rm = TRUE) * 100,
+    weighted_bm6_profile3 = mean(weighted_bm6_profile3, na.rm = TRUE) * 100,
+    weighted_bm7_profile3 = mean(weighted_bm7_profile3, na.rm = TRUE) * 100,
+    weighted_bm8_profile3 = mean(weighted_bm8_profile3, na.rm = TRUE) * 100
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("profile3", "", Milestone),  # Clean up the milestone names
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting for Profile 3
+plot_data3 <- tibble(
+  Milestone = names(mean_ages3),
+  MeanAge = unlist(mean_ages3),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile3$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile3$Labels
+) %>%
+  mutate(MilestoneName = variable_names[Milestone]) %>%
+  arrange(MeanAge)
+
+# Ensure the Milestone column is a factor ordered by MeanAge
+plot_data3$Milestone <- factor(plot_data3$MilestoneName, levels = plot_data3$MilestoneName)
+
+# Generate the plot for Profile 3
+ggplot(plot_data3, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') + 
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) + 
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 3: Mean Age and Probability of Non-Achievement") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r profile 3 demog}
+# Loop through demographic variables and calculate count and percentage for each for Cluster 3
+results_list <- list()
+for(demographic in demographic_variables) {
+  results_list[[demographic]] <- calculate_demographics(GZMCore_Weighted, demographic, 3)
+}
+
+# Print out the results for each demographic variable
+for(demographic in names(results_list)) {
+  cat("Results for", demographic, ":\n")
+  print(results_list[[demographic]])
+}
+```
+
+### Profile 4 Full Sample
+
+```{r graph probs 4}
+# Step 1: Subset Data for Profile 4
+profile4_data <- GZMCore_Weighted %>% filter(C == 4)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages4 <- profile4_data %>%
+  summarise(
+    m1 = mean(m1, na.rm = TRUE),
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile4_data %>%
+  summarise(
+    m1 = sd(m1, na.rm = TRUE),
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement for Profile 4
+mean_weighted_probs_profile4 <- profile4_data %>%
+  summarise(
+    weighted_bm1_profile4 = mean(weighted_bm1_profile4, na.rm = TRUE) * 100,
+    weighted_bm2_profile4 = mean(weighted_bm2_profile4, na.rm = TRUE) * 100,
+    weighted_bm3_profile4 = mean(weighted_bm3_profile4, na.rm = TRUE) * 100,
+    weighted_bm4_profile4 = mean(weighted_bm4_profile4, na.rm = TRUE) * 100,
+    weighted_bm5_profile4 = mean(weighted_bm5_profile4, na.rm = TRUE) * 100,
+    weighted_bm6_profile4 = mean(weighted_bm6_profile4, na.rm = TRUE) * 100,
+    weighted_bm7_profile4 = mean(weighted_bm7_profile4, na.rm = TRUE) * 100,
+    weighted_bm8_profile4 = mean(weighted_bm8_profile4, na.rm = TRUE) * 100
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("profile4", "", Milestone),  # Clean up the milestone names
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting for Profile 4
+plot_data4 <- tibble(
+  Milestone = names(mean_ages4),
+  MeanAge = unlist(mean_ages4),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile4$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile4$Labels
+) %>%
+  mutate(MilestoneName = variable_names[Milestone]) %>%
+  arrange(MeanAge)
+
+# Ensure the Milestone column is a factor ordered by MeanAge
+plot_data4$Milestone <- factor(plot_data4$MilestoneName, levels = plot_data4$MilestoneName)
+
+# Generate the plot for Profile 4
+ggplot(plot_data4, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') + 
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) + 
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 4: Mean Age and Probability of Non-Achievement") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r profile 4 demog}
+# Loop through demographic variables and calculate count and percentage for each for Cluster 4
+results_list <- list()
+for(demographic in demographic_variables) {
+  results_list[[demographic]] <- calculate_demographics(GZMCore_Weighted, demographic, 4)
+}
+
+# Print out the results for each demographic variable
+for(demographic in names(results_list)) {
+  cat("Results for", demographic, ":\n")
+  print(results_list[[demographic]])
+}
+```
+
+## All 4-Profiles
+
+```{r full profile sequences}
+all_plot_data <- bind_rows(
+  plot_data %>% mutate(Profile = "Profile 1"),
+  plot_data2 %>% mutate(Profile = "Profile 2"),
+  plot_data3 %>% mutate(Profile = "Profile 3"),
+  plot_data4 %>% mutate(Profile = "Profile 4")
+)
+
+# Establish milestone order from Profile 3
+milestone_order <- plot_data3 %>% arrange(MeanAge) %>% pull(Milestone)
+
+# Use the order to arrange milestones in the combined plot data
+all_plot_data <- all_plot_data %>%
+  mutate(Milestone = factor(Milestone, levels = milestone_order))
+
+# Plotting all profiles on a single graph
+p <- ggplot(all_plot_data, aes(x = Milestone, y = MeanAge, color = Profile, shape = Profile, group = Profile)) +
+  geom_line() +  # Connecting lines for each profile
+  geom_point(size = 3) +  # Points at each milestone with different shapes
+  scale_shape_manual(values = c(10, 12, 13, 14)) +  # Manually assign shapes to each profile
+  labs(
+    x = "Milestone",
+    y = "Mean Age of Milestone Achievement"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"  # Positioning the legend on the right side
+  ) +
+  scale_color_brewer(
+    palette = "Set1", 
+    labels = c(
+      expression("Profile 1 (" * italic(n) * "=100)"), 
+      expression("Profile 2 (" * italic(n) * "=110)"), 
+      expression("Profile 3 (" * italic(n) * "=241)"), 
+      expression("Profile 4 (" * italic(n) * "=39)")
+    )
+  ) +
+  guides(
+    color = guide_legend(override.aes = list(shape = c(10, 12, 13, 14))),  # Combine shape and color in one legend
+    shape = "none"  # Remove the redundant shape legend
+  )
+
+# Save the plot as a PDF
+ggsave("all_profiles_plot.pdf", plot = p, width = 8, height = 6)
+```
+
+<a class="top-link hide" href="#top" onclick="window.scrollTo({top: 0, behavior: 'smooth'}); return false;">↑</a>
+
+<script>
+  var mybutton = document.querySelector('.top-link');
+  window.onscroll = function() {
+    if (document.body.scrollTop > 20 || document.documentElement.scrollTop > 20) {
+      mybutton.classList.remove('hide');
+    } else {
+      mybutton.classList.add('hide');
+    }
+  };
+</script>

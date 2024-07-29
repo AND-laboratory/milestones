@@ -1,0 +1,190 @@
+---
+title: "Milestone Chi-Square Data Analysis"
+author: "WWar"
+date: "`r Sys.Date()`"
+output: html_document
+toc: true
+number_sections: true
+---
+
+```{r packages, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(tidyverse)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+load("C:file path here/GZMCore.RData")
+set.seed(999)
+```
+
+# Milestone Descriptives
+
+Total frequency of each milestone
+
+```{r frequency, include=TRUE}
+# Calculate the total number of samples
+total_samples <- nrow(GZMCore)
+
+# Compute frequencies and percentages for each milestone
+milestone_frequencies <- GZMCore %>%
+  summarise(
+    Attraction = sum(!is.na(MAttractionTEXT)),
+    SelfIdentity = sum(!is.na(MSelfIdentityTEXT)),
+    SexActHom = sum(!is.na(MSAHomTEXT)),
+    SexActHet = sum(!is.na(MSAHetTEXT)),
+    RelHom = sum(!is.na(MRHomTEXT)),
+    RelHet = sum(!is.na(MRHetTEXT)),
+    ComingOut = sum(!is.na(MComingOutTEXT)),
+    ComingOutFamily = sum(!is.na(MComingOutFamily4TEXT))
+  ) %>%
+  pivot_longer(cols = everything(), names_to = "Milestone", values_to = "Frequency") %>%
+  mutate(Percentage = (Frequency / total_samples) * 100)
+
+# Output the table in markdown format
+kable(milestone_frequencies, format = "markdown", col.names = c("Milestone", "Frequency", "Percentage"))
+```
+
+Frequency of each milestone by demographic subgroup
+
+```{r milestone breakdown, include=TRUE}
+demographic_variables <- c("IdentitySex", "GenderGroup", "SexualityGroup", "RaceDemog", "IdentityDisability", "IdentityNeuro", "ReligionDemog", "SchoolYear")
+
+milestones <- c("MAttraction", "MSelfIdentity", "MSAHom", "MSAHet", "MRHom", "MRHet", "MComingOut", "MComingOutFamily4")
+
+# Initialize an empty list to store the results for each demographic variable
+demographic_freq_list <- list()
+
+# Loop through each demographic variable
+for (var in demographic_variables) {
+  # Initialize an empty data frame to store frequencies for all milestones for the current demographic variable
+  freq_df <- data.frame()
+  
+  # Loop through each milestone
+  for (milestone in milestones) {
+    # Group the data by the current demographic variable and calculate the frequency of the current milestone
+    freq <- GZMCore %>%
+      group_by(!!sym(var)) %>%
+      summarise(Frequency = sum(!is.na(!!sym(paste0(milestone, "TEXT"))))) %>%
+      rename(!!paste0(milestone, "_Frequency") := Frequency)
+    
+    # Merge the results for each milestone to create one table per demographic variable
+    if (nrow(freq_df) == 0) {
+      freq_df <- freq
+    } else {
+      freq_df <- full_join(freq_df, freq, by = var)
+    }
+  }
+  
+  # Store the table in the list with the name of the demographic variable
+  demographic_freq_list[[var]] <- freq_df
+}
+
+# View the results
+demographic_freq_list
+```
+
+# Differences in Reported Milestones
+## Chi-Square variable preparation
+
+```{r variable prep, include=TRUE}
+# Create new variable for analyses where only male and female SAB are included
+GZMCore$IdentitySexAnalysis <- ifelse(GZMCore$IdentitySex %in% c(1, 2), GZMCore$IdentitySex, NA)
+GZMCore$IdentitySexAnalysis <- factor(GZMCore$IdentitySexAnalysis)
+# Create a new variable for analysis that groups based on POC and White due to small sample sizes of races.
+GZMCore <- GZMCore %>%
+  mutate(RaceAnalysis = case_when(
+    RaceDemog %in% c(6) ~ as.factor(RaceDemog),  # Retain values 6 "White"
+    RaceDemog %in% c(1, 2, 3, 4, 5, 7, 9) ~ as.factor(1),   # Recode values 1, 3, 4, 5, and 7 as 1 "POC"
+    RaceDemog == 8 ~ as.factor(NA)             # Recode value 8 as NA "Prefer not to say"
+  ))
+
+# recode prefer not to say participants as missing data
+GZMCore$ReligionDemog <- ifelse(GZMCore$ReligionDemog == 3, NA, GZMCore$ReligionDemog)
+GZMCore$IdentityDisability <- ifelse(GZMCore$IdentityDisability == 6, NA, GZMCore$IdentityDisability)
+GZMCore$IdentityNeuro <- ifelse(GZMCore$IdentityNeuro == 3, NA, GZMCore$IdentityNeuro)
+GZMCore$SchoolYear <- ifelse(GZMCore$SchoolYear == 3, NA, GZMCore$SchoolYear)
+
+# Set other variables as factor variables
+GZMCore$SchoolYear <- factor(GZMCore$SchoolYear)
+GZMCore$RaceAnalysis <- factor(GZMCore$RaceAnalysis)
+GZMCore$IdentityDisability <- factor(GZMCore$IdentityDisability)
+GZMCore$IdentityNeuro <- factor(GZMCore$IdentityNeuro)
+GZMCore$ReligionDemog <- factor(GZMCore$ReligionDemog)
+
+# Re-code missing milestone data as not achieved
+milestones <- c("MAttraction", "MSelfIdentity", "MSAHom", "MSAHet", "MRHom", "MRHet", "MComingOut", "MComingOutFamily4")
+```
+
+## Chi-Square Test
+
+```{r chi-square analysis, include=TRUE, warning=FALSE}
+predictor_variables <- c("IdentitySexAnalysis", "SchoolYear", "GenderGroup", "SexualityGroup", "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+
+alpha <- 0.05
+
+# Create an empty list to store chi-square results
+chi_square_results_list <- list()
+
+# Loop through each milestone
+for (milestone in milestones) {
+  cat("Chi-square tests for", milestone, ":\n")
+  
+  # Loop through each predictor variable
+  for (predictor_var in predictor_variables) {
+    # Create the contingency table for the combination of milestone and predictor variable
+    contingency_table <- table(GZMCore[[milestone]], GZMCore[[predictor_var]])
+    
+    # Perform chi-square test
+    chi_square <- chisq.test(contingency_table)
+    
+    # Calculate the total number of tests
+    num_tests <- length(milestones) * length(predictor_variables)
+
+    # Adjusted significance level using Bonferroni correction
+    adjusted_alpha <- alpha / num_tests
+    
+    # Check if the test is statistically significant after adjusting for multiple testing
+     if (chi_square$p.value < adjusted_alpha) {
+      p_value <- format.pval(chi_square$p.value, digits = 3)
+      cat("Significant result for", milestone, "and", predictor_var, ": ")
+      cat("(χ2(", chi_square$parameter, ", N =", sum(contingency_table), ") =", round(chi_square$statistic, 2), ", p <", p_value, ")\n")
+    } else {
+      cat("Not statistically significant result for", milestone, "and", predictor_var, "\n")
+    }
+    # Extract relevant information from the chi-square test result
+    chi_square_result <- data.frame(
+      SociodemographicVariable = rep(predictor_var, 1),
+      Milestone = rep(milestone, 1),
+      ChiSquare = chi_square$statistic,
+      DegreesOfFreedom = chi_square$parameter,
+      ParticipantResponses = sum(contingency_table),
+      PValue = chi_square$p.value,
+      stringsAsFactors = FALSE
+    )
+    
+    # Add the result to the list
+    chi_square_results_list[[length(chi_square_results_list) + 1]] <- chi_square_result
+  }
+  
+  # Print a newline for better readability
+  cat("\n")
+}
+```
+
+# Chi-square table
+
+```{r chi-sqaure table, include=TRUE}
+# Combine all results into a single data frame
+chi_square_results_df <- do.call(rbind, chi_square_results_list)
+
+# Format ChiSquare and PValue columns
+chi_square_results_df$ChiSquare <- format(chi_square_results_df$ChiSquare, scientific = FALSE, digits = 4)
+chi_square_results_df$PValue <- format(chi_square_results_df$PValue, scientific = FALSE, digits = 4)
+```
+
+
+
