@@ -12,12 +12,6 @@ output:
 
 <a name="top"></a>
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-load("C:file path here/GZMCore.RData")
-set.seed(123)
-```
-
 ```{r packages}
 library(MplusAutomation)
 library(texreg)
@@ -26,6 +20,13 @@ library(stringr)
 library(ggplot2)
 library(tidyr)
 library(knitr)
+library(patchwork)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+load("C:file path here/GZMCore.RData")
+set.seed(123)
 ```
 
 ```{r css-and-js, echo=FALSE, results='asis'}
@@ -384,15 +385,17 @@ demographic_variables <- c("IdentitySex", "SchoolYear", "GenderGroup", "Sexualit
 ```
 
 ```{r profile descriptives, include=TRUE}
-# Calculate total counts and percentages for each profile
+# Calculate total counts, percentages, mean age, and standard deviation of age for each profile
 profile_summary <- GZMCore_Weighted %>%
   group_by(C) %>%
   summarise(
-    TotalCount = n(),  # Count the number of entries in each profile
-    Percentage = (TotalCount / nrow(GZMCore_Weighted)) * 100  # Calculate percentage of the total sample
+    TotalCount = n(),
+    Percentage = (TotalCount / nrow(GZMCore_Weighted)) * 100,
+    MeanAge = mean(AgeCurrent, na.rm = TRUE),
+    SDAge = sd(AgeCurrent, na.rm = TRUE)
   ) %>%
   ungroup() %>%
-  arrange(C)  
+  arrange(C)
 
 # Print the results
 print(profile_summary)
@@ -812,6 +815,11 @@ all_plot_data <- bind_rows(
   plot_data4 %>% mutate(Profile = "Profile 4")
 )
 
+all_plot_data <- all_plot_data %>%
+  mutate(
+    Profile = factor(Profile, levels = c("Profile 1", "Profile 3", "Profile 2", "Profile 4"))
+  )
+
 # Establish milestone order from Profile 3
 milestone_order <- plot_data3 %>% arrange(MeanAge) %>% pull(Milestone)
 
@@ -836,10 +844,10 @@ p <- ggplot(all_plot_data, aes(x = Milestone, y = MeanAge, color = Profile, shap
   scale_color_brewer(
     palette = "Set1", 
     labels = c(
-      expression("Profile 1 (" * italic(n) * "=100)"), 
-      expression("Profile 2 (" * italic(n) * "=110)"), 
-      expression("Profile 3 (" * italic(n) * "=241)"), 
-      expression("Profile 4 (" * italic(n) * "=39)")
+      bquote("Profile 1 (EA; " * italic(n) * "=100)"), 
+      bquote("Profile 3 (MA; " * italic(n) * "=241)"), 
+      bquote("Profile 2 (LA; " * italic(n) * "=110)"), 
+      bquote("Profile 4 (AH; " * italic(n) * "=39)")
     )
   ) +
   guides(
@@ -849,6 +857,63 @@ p <- ggplot(all_plot_data, aes(x = Milestone, y = MeanAge, color = Profile, shap
 
 # Save the plot as a PDF
 ggsave("all_profiles_plot.pdf", plot = p, width = 8, height = 6)
+```
+
+## Non Achievement Plots
+
+```{r non achievement plots}
+# Dividing the MeanWeightedProb column by 100 in each data frame
+plot_data$MeanWeightedProb <- plot_data$MeanWeightedProb / 100
+plot_data2$MeanWeightedProb <- plot_data2$MeanWeightedProb / 100
+plot_data3$MeanWeightedProb <- plot_data3$MeanWeightedProb / 100
+plot_data4$MeanWeightedProb <- plot_data4$MeanWeightedProb / 100
+
+# Function to create plot
+create_plot <- function(data, profile_name) {
+  ggplot(data, aes(x = Milestone, y = MeanWeightedProb, fill = MeanWeightedProb)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.5), width = 0.6) +
+    geom_hline(yintercept = 0.50, linetype = "dotted", color = "red") +
+    scale_fill_gradient(name = "Non-Achievement", low = "lightgray", high = "black", limits = c(0, 1)) +
+    scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+    labs(title = paste("Non-Achievement Proportion -", profile_name)) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+      axis.text.y = element_text(size = 12)
+    )
+}
+
+# Mapping from profile number to label
+profile_labels <- c("Profile 1 (EA)", "Profile 2 (LA)", "Profile 3 (MA)", "Profile 4 (AH)")
+
+# Prepare and store all plots in a list with descriptive titles
+plot_list <- lapply(1:4, function(i) {
+  profile_data <- get(paste0("plot_data", ifelse(i == 1, "", i)))
+  profile_name <- profile_labels[i]
+  create_plot(profile_data, profile_name)
+})
+
+# Combine all plots using patchwork's operators into a 2x2 grid
+combined_plot <- (plot_list[[1]] | plot_list[[2]]) /
+  (plot_list[[3]] | plot_list[[4]]) +
+  plot_layout(guides = 'collect')  # Collect all guides into a single global legend
+
+# Add global X and Y labels
+combined_plot <- combined_plot + 
+  labs(x = "Milestone", y = "Proportion of Non-Achievement (%)") +
+  plot_annotation(theme = theme(
+                    plot.title = element_text(size = 20, face = "bold"),
+                    plot.subtitle = element_text(size = 16)
+                  ))
+
+# Print the combined plot
+print(combined_plot)
+
+# Save the plot as a PDF
+ggsave("non-achievement_plot.pdf", plot = combined_plot, width = 15, height = 10)
 ```
 
 <a class="top-link hide" href="#top" onclick="window.scrollTo({top: 0, behavior: 'smooth'}); return false;">↑</a>
