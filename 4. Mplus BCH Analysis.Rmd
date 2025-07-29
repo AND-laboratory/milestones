@@ -10,18 +10,18 @@ output:
     css: styles.css
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-load("C:file path here/GZMCore.RData")
-set.seed(123)
-```
-
 ```{r packages}
 library(MplusAutomation)
 library(dplyr)
 library(stringr)
 library(tidyr)
 library(tidyselect)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+load("C:file path here/GZMCore.RData")
+set.seed(123)
 ```
 
 # Set Up

@@ -1,0 +1,1073 @@
+---
+title: "Mplus LPA Sensitivity Analysis"
+author: "WWar"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    css: styles.css
+---
+
+<a name="top"></a>
+
+```{r packages}
+library(MplusAutomation)
+library(texreg)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+load("C:file path here/GZMCore.RData")
+set.seed(123)
+```
+
+```{r css-and-js, echo=FALSE, results='asis'}
+cat('
+<style>
+/* Enable smooth scrolling */
+@media screen and (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* Style the button */
+.top-link {
+  transition: all .25s ease-in-out;
+  position: fixed; /* This keeps the button in a fixed position relative to the viewport */
+  bottom: 20px; /* Distance from the bottom of the viewport */
+  right: 20px; /* Distance from the right of the viewport */
+  display: inline-flex;
+  color: #000000;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  padding: 8px; /* Adjust padding to make the button larger or smaller */
+  width: 40px; /* Width of the button */
+  height: 40px; /* Height of the button */
+  background-color: #F8F8F8;
+  text-decoration: none; /* Removes underline from the link */
+  font-size: 24px; /* Size of the arrow or text inside the button */
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3); /* Optional: adds shadow for better visibility */
+}
+
+/* Initially hide the link and show on scroll */
+.top-link.hide {
+  display: none;
+}</style>
+')
+```
+
+# Set Up
+
+```{r variable prep, include=TRUE}
+# Create a new variable "RaceAnalysis" based on conditions where White are retained and a POC race value is created (Other races = 1)
+GZMCore <- GZMCore %>%
+  mutate(RaceAnalysis = case_when(
+    RaceDemog == 6 ~ "White",
+    RaceDemog %in% c(1, 2, 3, 4, 5, 7, 9) ~ "POC",
+    RaceDemog == 8 ~ as.factor(NA) # Recode value 8 as NA
+  )) %>%
+  mutate(RaceAnalysis = factor(RaceAnalysis))
+
+# Set demographic values for output interpretation
+GZMCore <- GZMCore %>%
+  mutate(
+    IdentitySex = factor(IdentitySex, levels = c(1, 2, 3, 5), labels = c("male", "female", "intersex", "prefer not to say")),
+    SchoolYear = factor(SchoolYear, levels = c(1, 2, 3), labels = c("In highschool", "Not in highschool", "Prefer not to say")),
+    GenderGroup = factor(GenderGroup, levels = c(1, 2, 3, 4, 5), labels = c("Cis male", "Cis female", "Gender expansive", "Transfem", "Transmasc")),
+    SexualityGroup = factor(SexualityGroup, levels = c(1, 2, 3, 4), labels = c("Monosexual", "Plurisexual", "Asexual spectrum", "Queer or questioning")),
+    IdentityDisability = factor(IdentityDisability, levels = c(4, 5, 6), labels = c("Identified", "Did not identify", "Did not answer")),
+    IdentityNeuro = factor(IdentityNeuro, levels = c(1, 2, 3), labels = c("Identified", "Did not identify", "Did not answer")),
+    ReligionDemog = factor(ReligionDemog, levels = c(1, 2, 3), labels = c("Is religious", "Is not religious", "Did not answer"))
+  )
+
+# Re-name milestone variables for interpretability
+GZMCore <- GZMCore %>%
+  rename(
+    m1 = MAttractionTEXT,
+    m2 = MSelfIdentityTEXT,
+    m3 = MSAHomTEXT,
+    m4 = MSAHetTEXT,
+    m5 = MRHomTEXT,
+    m6 = MRHetTEXT,
+    m7 = MComingOutTEXT,
+    m8 = MComingOutFamily4TEXT
+)
+
+# Re-name binary milestone variables for interpretability - this version is for later when we calculate the non-achievment as it retains NAs
+GZMCoreWP <- GZMCore %>%
+  rename(
+    bm1 = MAttraction,
+    bm2 = MSelfIdentity,
+    bm3 = MSAHom,
+    bm4 = MSAHet,
+    bm5 = MRHom,
+    bm6 = MRHet,
+    bm7 = MComingOut,
+    bm8 = MComingOutFamily4
+  )
+
+# Re-name binary milestone variables for interpretability
+GZMCore <- GZMCore %>%
+  rename(
+    bm1 = MAttraction,
+    bm2 = MSelfIdentity,
+    bm3 = MSAHom,
+    bm4 = MSAHet,
+    bm5 = MRHom,
+    bm6 = MRHet,
+    bm7 = MComingOut,
+    bm8 = MComingOutFamily4
+  ) %>%
+  mutate(
+    across(c(bm1, bm2, bm3, bm4, bm5, bm6, bm7, bm8), ~ if_else(is.na(.) | . == 2, 0, .)) # re-code 2 and missing to be 0 indicating a milestone was not achieved - Mplus cannot have missing data that is not accounted for. The coding of missing binary milestones as not achieved should not matter as the age data (m1-m8) that it matches to will still be missing and is coded as -99 in.
+)
+
+# Create separate data set for no asexuals
+GZMCoreNAWP <- GZMCore %>%
+  filter(SexualityGroup != "Asexual spectrum") # For LPA
+GZMCoreNAWPX <- GZMCoreWP %>%
+  filter(SexualityGroup != "Asexual spectrum") # For non-achievment calculations
+
+# Create a separate data set for no attraction
+GZMNoattrWP <- GZMCore # For LPA
+GZMNoattrWPX <- GZMCoreWP # For non-achievment calculations
+
+# Custom milestone names
+variable_names <- c(m1 = "Attraction", m2 = "Self-Identity", m3 = "S_S Sexual Activity", m4 = "O_S Sexual Activity",
+                    m5 = "S_S Relationship", m6 = "O_S Relationship", m7 = "First Disclosure", m8 = "Disclosure (Family)")
+
+# List of demographic variables
+demographic_variables <- c("IdentitySex", "SchoolYear", "GenderGroup", "SexualityGroup", 
+                           "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog")
+
+# Define milestone and binary milestone column names
+milestones <- c("m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8")
+binarymilestones <- c("bm1", "bm2", "bm3", "bm4", "bm5", "bm6", "bm7", "bm8")
+```
+
+# Sensitivity Analyses
+
+# Removing Attraction Milestone
+
+The attraction milestone was not achieved by 55 participants (11.2% of the sample). The mean age of those who did not achieve this milestone was 18.18yrs. Removing the attraction milestone and running the model, and doing the same with attraction included, and removing asexual participants, is essential for understanding how these may influence the profiles (if at all).
+
+## Specifying the LPA Model
+
+```{r noatt model}
+# Generate a unique ID
+GZMNoattrWP$ID <- sprintf("%03d", seq(101, by = 1, length.out = nrow(GZMNoattrWP)))
+
+# Define the clean_data function
+clean_data <- function(x) {
+  x[is.na(x) | is.nan(x) | is.infinite(x)] <- -99 # Sets NA as -99
+  return(x)
+}
+
+# Subset new data set including ID
+Noatt_data <- GZMNoattrWP[, c("ID", milestones)]  # Add "ID" to the list of columns to keep
+
+# Apply the function to each column except ID to avoid altering the IDs
+Noatt_data[-1] <- data.frame(lapply(Noatt_data[-1], clean_data))
+
+# Add in indicators, ensuring the ID column is not affected
+Noatt_data <- bind_cols(Noatt_data, GZMNoattrWP[, binarymilestones])
+
+# Remove attraction
+Noatt_data <- Noatt_data[ , -c(2, 10)] # Drops columns of attraction milsetone for the age and the indicator from the data set
+
+# Save data file
+prepareMplusData(Noatt_data, "noattmodel.dat")
+```
+
+```{r run the no attraction model, include=TRUE}
+# The input of model 4 from the first/main LPA was modified to include a line to save the class probabilities
+runModels("noattmodel.inp")
+noattresults <- readModels("noattmodel.out")
+```
+
+## Class probabilities and profiles
+
+```{r no attraction model}
+# Define the widths for each column based on the Mplus specification
+widths <- rep(10, 19)  # There are 19 variables, each 10 characters wide
+
+# Variable names without attraction
+na_variable_names <- c(m2 = "Self-Identity", m3 = "S_S Sexual Activity", m4 = "O_S Sexual Activity",
+                    m5 = "S_S Relationship", m6 = "O_S Relationship", m7 = "First Disclosure", m8 = "Disclosure (Family)")
+
+# Read the fixed-width format file
+class_probs_noatt <- read.fwf('noatt_class_probabilities.dat', widths = widths, header = FALSE)
+
+# Assign column names based on the Mplus specification
+colnames(class_probs_noatt) <- c("M2", "M3", "M4", "M5", "M6", "M7", "M8",
+                                 "BM2", "BM3", "BM4", "BM5", "BM6", "BM7", "BM8",
+                                  "CPROB1", "CPROB2", "CPROB3", "CPROB4", "C")
+
+# Replace asterisks with NA to indicate missing values
+class_probs_noatt[class_probs_noatt == "*"] <- NA
+
+# Convert the data frame from character to numeric, since read.fwf imports as 'factor' by default
+class_probs_noatt[] <- lapply(class_probs_noatt, function(x) as.numeric(as.character(x)))
+
+# Remove columns not needed and keep only class probabilities and class membership
+class_probs_noatt <- class_probs_noatt[c("CPROB1", "CPROB2", "CPROB3", "CPROB4", "C")]
+
+# Bind the class probabilities with the main data frame
+GZMNoattr_Weighted <- cbind(GZMNoattrWPX, class_probs_noatt)
+
+# Recode binary milestone variables: 1 to 0, 2 to 1, leave NA as is
+GZMNoattr_Weighted <- GZMNoattr_Weighted %>%
+  mutate(across(starts_with("bm"), ~ ifelse(.x == 1, 0, ifelse(.x == 2, 1, NA))))
+
+# Compute Weighted Proportions of Non-Achievement for each profile
+GZMNoattr_Weighted <- GZMNoattr_Weighted %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB1, .names = "weighted_{.col}_profile1")) %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB2, .names = "weighted_{.col}_profile2")) %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB3, .names = "weighted_{.col}_profile3")) %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB4, .names = "weighted_{.col}_profile4"))
+
+# Calculate total counts and percentages for each profile
+profile_summary_noatt <- GZMNoattr_Weighted %>%
+  group_by(C) %>%
+  summarise(
+    TotalCount = n(),  # Count the number of entries in each profile
+    Percentage = (TotalCount / nrow(GZMNoattr_Weighted)) * 100  # Calculate percentage of the total sample
+  ) %>%
+  ungroup() %>%
+  arrange(C)  # Optional: arrange by profile for better readability
+
+# Print the profile summary
+print(profile_summary_noatt)
+```
+
+### Profile 1 No Attraction
+
+```{r no attr graph probs 1}
+# Step 1: Subset Data for Profile 1
+profile1_data <- GZMNoattr_Weighted %>% filter(C == 1)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages <- profile1_data %>%
+  summarise(
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile1_data %>%
+  summarise(
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement
+mean_weighted_probs_profile1 <- profile1_data %>%
+  summarise(
+    weighted_bm2_profile1 = mean(weighted_bm2_profile1, na.rm = TRUE) * 100,
+    weighted_bm3_profile1 = mean(weighted_bm3_profile1, na.rm = TRUE) * 100,
+    weighted_bm4_profile1 = mean(weighted_bm4_profile1, na.rm = TRUE) * 100,
+    weighted_bm5_profile1 = mean(weighted_bm5_profile1, na.rm = TRUE) * 100,
+    weighted_bm6_profile1 = mean(weighted_bm6_profile1, na.rm = TRUE) * 100,
+    weighted_bm7_profile1 = mean(weighted_bm7_profile1, na.rm = TRUE) * 100,
+    weighted_bm8_profile1 = mean(weighted_bm8_profile1, na.rm = TRUE) * 100
+  ) %>%
+  # Pivot the data to a long format
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("_profile1", "", Milestone),  # Clean up the milestone names
+    # Create a formatted label for plotting
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting
+plot_data <- tibble(
+  Milestone = names(mean_ages),
+  MeanAge = unlist(mean_ages),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile1$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile1$Labels
+)
+
+# Convert milestone codes to names using the custom names
+plot_data$Milestone <- na_variable_names[plot_data$Milestone]
+
+# Sort plot data by MeanAge to display the milestones in the order of their occurrence
+plot_data <- plot_data %>%
+  mutate(Milestone = factor(Milestone, levels = Milestone[order(MeanAge)])) %>%
+  arrange(MeanAge)
+
+# Generate the plot
+ggplot(plot_data, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') +  # Ensure the milestones are connected by a line
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) +  # Adjust the y-offset as needed
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 1: Mean Age and Probability of Non-Achievement (No Attraction)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Profile 2 No Attraction
+
+```{r no attr graph probs 2}
+# Step 1: Subset Data for Profile 2
+profile2_data <- GZMNoattr_Weighted %>% filter(C == 2)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages2 <- profile2_data %>%
+  summarise(
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile2_data %>%
+  summarise(
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement
+mean_weighted_probs_profile2 <- profile2_data %>%
+  summarise(
+    weighted_bm2_profile2 = mean(weighted_bm2_profile2, na.rm = TRUE) * 100,
+    weighted_bm3_profile2 = mean(weighted_bm3_profile2, na.rm = TRUE) * 100,
+    weighted_bm4_profile2 = mean(weighted_bm4_profile2, na.rm = TRUE) * 100,
+    weighted_bm5_profile2 = mean(weighted_bm5_profile2, na.rm = TRUE) * 100,
+    weighted_bm6_profile2 = mean(weighted_bm6_profile2, na.rm = TRUE) * 100,
+    weighted_bm7_profile2 = mean(weighted_bm7_profile2, na.rm = TRUE) * 100,
+    weighted_bm8_profile2 = mean(weighted_bm8_profile2, na.rm = TRUE) * 100
+  ) %>%
+  # Pivot the data to a long format
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("_profile2", "", Milestone),  # Clean up the milestone names
+    # Create a formatted label for plotting
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting
+plot_data2 <- tibble(
+  Milestone = names(mean_ages2),
+  MeanAge = unlist(mean_ages2),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile2$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile2$Labels
+)
+
+# Convert milestone codes to names using the custom names
+plot_data2$Milestone <- na_variable_names[plot_data2$Milestone]
+
+# Sort plot data by MeanAge to display the milestones in the order of their occurrence
+plot_data2 <- plot_data2 %>%
+  mutate(Milestone = factor(Milestone, levels = Milestone[order(MeanAge)])) %>%
+  arrange(MeanAge)
+
+# Generate the plot
+ggplot(plot_data2, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') +  # Ensure the milestones are connected by a line
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) +  # Adjust the y-offset as needed
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 2: Mean Age and Probability of Non-Achievement (No Attraction)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Profile 3 No Attraction
+
+```{r no attr graph probs 3}
+# Step 1: Subset Data for Profile 3
+profile3_data <- GZMNoattr_Weighted %>% filter(C == 3)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages3 <- profile3_data %>%
+  summarise(
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile3_data %>%
+  summarise(
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement for Profile 3
+mean_weighted_probs_profile3 <- profile3_data %>%
+  summarise(
+    weighted_bm2_profile3 = mean(weighted_bm2_profile3, na.rm = TRUE) * 100,
+    weighted_bm3_profile3 = mean(weighted_bm3_profile3, na.rm = TRUE) * 100,
+    weighted_bm4_profile3 = mean(weighted_bm4_profile3, na.rm = TRUE) * 100,
+    weighted_bm5_profile3 = mean(weighted_bm5_profile3, na.rm = TRUE) * 100,
+    weighted_bm6_profile3 = mean(weighted_bm6_profile3, na.rm = TRUE) * 100,
+    weighted_bm7_profile3 = mean(weighted_bm7_profile3, na.rm = TRUE) * 100,
+    weighted_bm8_profile3 = mean(weighted_bm8_profile3, na.rm = TRUE) * 100
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("profile3", "", Milestone),  # Clean up the milestone names
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting for Profile 3
+plot_data3 <- tibble(
+  Milestone = names(mean_ages3),
+  MeanAge = unlist(mean_ages3),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile3$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile3$Labels
+) %>%
+  mutate(MilestoneName = na_variable_names[Milestone]) %>%
+  arrange(MeanAge)
+
+# Ensure the Milestone column is a factor ordered by MeanAge
+plot_data3$Milestone <- factor(plot_data3$MilestoneName, levels = plot_data3$MilestoneName)
+
+# Generate the plot for Profile 3
+ggplot(plot_data3, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') + 
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) + 
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 3: Mean Age and Probability of Non-Achievement (No Attraction)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Profile 4 No Attraction
+
+```{r no attr graph probs 4}
+# Step 1: Subset Data for Profile 4
+profile4_data <- GZMNoattr_Weighted %>% filter(C == 4)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages4 <- profile4_data %>%
+  summarise(
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile4_data %>%
+  summarise(
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement for Profile 4
+mean_weighted_probs_profile4 <- profile4_data %>%
+  summarise(
+    weighted_bm2_profile4 = mean(weighted_bm2_profile4, na.rm = TRUE) * 100,
+    weighted_bm3_profile4 = mean(weighted_bm3_profile4, na.rm = TRUE) * 100,
+    weighted_bm4_profile4 = mean(weighted_bm4_profile4, na.rm = TRUE) * 100,
+    weighted_bm5_profile4 = mean(weighted_bm5_profile4, na.rm = TRUE) * 100,
+    weighted_bm6_profile4 = mean(weighted_bm6_profile4, na.rm = TRUE) * 100,
+    weighted_bm7_profile4 = mean(weighted_bm7_profile4, na.rm = TRUE) * 100,
+    weighted_bm8_profile4 = mean(weighted_bm8_profile4, na.rm = TRUE) * 100
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("profile4", "", Milestone),  # Clean up the milestone names
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting for Profile 4
+plot_data4 <- tibble(
+  Milestone = names(mean_ages4),
+  MeanAge = unlist(mean_ages4),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile4$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile4$Labels
+) %>%
+  mutate(MilestoneName = na_variable_names[Milestone]) %>%
+  arrange(MeanAge)
+
+# Ensure the Milestone column is a factor ordered by MeanAge
+plot_data4$Milestone <- factor(plot_data4$MilestoneName, levels = plot_data4$MilestoneName)
+
+# Generate the plot for Profile 4
+ggplot(plot_data4, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') + 
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) + 
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 4: Mean Age and Probability of Non-Achievement (No Attraction)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### All 4-Profiles
+
+```{r full profile sequences}
+all_plot_data <- bind_rows(
+  plot_data %>% mutate(Profile = "Profile 1"),
+  plot_data2 %>% mutate(Profile = "Profile 2"),
+  plot_data3 %>% mutate(Profile = "Profile 3"),
+  plot_data4 %>% mutate(Profile = "Profile 4")
+)
+
+# Establish milestone order from Profile 1
+milestone_order <- plot_data %>% arrange(MeanAge) %>% pull(Milestone)
+
+# Use the order to arrange milestones in the combined plot data
+all_plot_data <- all_plot_data %>%
+  mutate(Milestone = factor(Milestone, levels = milestone_order))
+
+# Plotting all profiles on a single graph
+ggplot(all_plot_data, aes(x = Milestone, y = MeanAge, color = Profile, shape = Profile, group = Profile)) +
+  geom_line() +  # Connecting lines for each profile
+  geom_point(size = 3) +  # Points at each milestone with different shapes
+  scale_shape_manual(values = c(10, 12, 13, 14)) +  # Manually assign shapes to each profile
+  labs(
+    x = "Milestone",
+    y = "Mean Age of Milestone Achievement"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"  # Positioning the legend on the right side
+  ) +
+  scale_color_brewer(
+    palette = "Set1", 
+    labels = c(
+      expression("Profile 1 (" * italic(n) * "=239)"), 
+      expression("Profile 2 (" * italic(n) * "=105)"), 
+      expression("Profile 3 (" * italic(n) * "=110)"), 
+      expression("Profile 4 (" * italic(n) * "=36)")
+    )
+  ) +
+  guides(
+    color = guide_legend(override.aes = list(shape = c(10, 12, 13, 14))),  # Combine shape and color in one legend
+    shape = "none"  # Remove the redundant shape legend
+  )
+```
+
+# Removing Asexual Spectrum Participants
+
+## Specifying the LPA Model
+
+```{r Mplus prep, include=TRUE}
+# Generate a unique 3-digit ID for each row
+GZMCoreNAWP$ID <- sprintf("%03d", seq(101, by = 1, length.out = nrow(GZMCoreNAWP)))
+
+# Subset new data set including ID
+LPA_data <- GZMCoreNAWP[, c("ID", milestones)]  # Add "ID" to the list of columns to keep
+
+# Apply the function to each column except ID to avoid altering the IDs
+LPA_data[-1] <- data.frame(lapply(LPA_data[-1], clean_data))
+
+# Add in indicators, ensuring the ID column is not affected
+LPA_data <- bind_cols(LPA_data, GZMCoreNAWP[, binarymilestones])
+
+# Save data file
+prepareMplusData(LPA_data, "NAmodel.dat")
+```
+
+```{r run the 4 prof model NA, include=TRUE}
+# The input of model 4 from the first/main LPA was modified to include a line to save the class probabilities
+runModels("finalmodelNA.inp")
+results <- readModels("finalmodelNA.out")
+```
+
+## Class probabilities and profiles
+
+```{r no asexual model}
+# Define the widths for each column based on the Mplus specification
+widths <- rep(10, 21)  # There are 21 variables, each 10 characters wide
+
+# Read the fixed-width format file
+class_probs_NA <- read.fwf('NA_class_probabilities.dat', widths = widths, header = FALSE)
+
+# Assign column names based on the Mplus specification
+colnames(class_probs_NA) <- c("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", 
+                              "BM1", "BM2", "BM3", "BM4", "BM5", "BM6", "BM7", "BM8",
+                              "CPROB1", "CPROB2", "CPROB3", "CPROB4", "C")
+
+# Replace asterisks with NA to indicate missing values
+class_probs_NA[class_probs_NA == "*"] <- NA
+
+# Convert the data frame from character to numeric, since read.fwf imports as 'factor' by default
+class_probs_NA[] <- lapply(class_probs_NA, function(x) as.numeric(as.character(x)))
+
+# Remove columns not needed
+class_probs_NA <- class_probs_NA[c("CPROB1", "CPROB2", "CPROB3", "CPROB4", "C")]
+
+GZMCoreNA_Weighted <- cbind(GZMCoreNAWPX, class_probs_NA)
+
+# Recode binary milestone variables: 1 to 0, 2 to 1, leave NA as is
+GZMCoreNA_Weighted <- GZMCoreNA_Weighted %>%
+  mutate(across(starts_with("bm"), ~ ifelse(.x == 1, 0, ifelse(.x == 2, 1, NA))))
+
+# Compute Weighted Proportions of Non-Achievement
+GZMCoreNA_Weighted <- GZMCoreNA_Weighted %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB1, .names = "weighted_{.col}_profile1")) %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB2, .names = "weighted_{.col}_profile2")) %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB3, .names = "weighted_{.col}_profile3")) %>%
+  mutate(across(starts_with("bm"), ~ .x * CPROB4, .names = "weighted_{.col}_profile4"))
+
+# Calculate total counts and percentages for each profile
+profile_summary_NA <- GZMCoreNA_Weighted %>%
+  group_by(C) %>%
+  summarise(
+    TotalCount = n(),  # Count the number of entries in each profile
+    Percentage = (TotalCount / nrow(GZMCoreNA_Weighted)) * 100  # Calculate percentage of the total sample
+  ) %>%
+  ungroup() %>%
+  arrange(C)  # Optional: arrange by profile for better readability
+
+# Print the results
+print(profile_summary_NA)
+```
+
+### Profile 1 No Asexual
+
+```{r no asex graph probs 1}
+# Step 1: Subset Data for Profile 1
+profile1_data <- GZMCoreNA_Weighted %>% filter(C == 1)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages <- profile1_data %>%
+  summarise(
+    m1 = mean(m1, na.rm = TRUE),
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile1_data %>%
+  summarise(
+    m1 = sd(m1, na.rm = TRUE),
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement
+mean_weighted_probs_profile1 <- profile1_data %>%
+  summarise(
+    weighted_bm1_profile1 = mean(weighted_bm1_profile1, na.rm = TRUE) * 100,
+    weighted_bm2_profile1 = mean(weighted_bm2_profile1, na.rm = TRUE) * 100,
+    weighted_bm3_profile1 = mean(weighted_bm3_profile1, na.rm = TRUE) * 100,
+    weighted_bm4_profile1 = mean(weighted_bm4_profile1, na.rm = TRUE) * 100,
+    weighted_bm5_profile1 = mean(weighted_bm5_profile1, na.rm = TRUE) * 100,
+    weighted_bm6_profile1 = mean(weighted_bm6_profile1, na.rm = TRUE) * 100,
+    weighted_bm7_profile1 = mean(weighted_bm7_profile1, na.rm = TRUE) * 100,
+    weighted_bm8_profile1 = mean(weighted_bm8_profile1, na.rm = TRUE) * 100
+  ) %>%
+  # Pivot the data to a long format
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("_profile1", "", Milestone),  # Clean up the milestone names
+    # Create a formatted label for plotting
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting
+plot_data <- tibble(
+  Milestone = names(mean_ages),
+  MeanAge = unlist(mean_ages),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile1$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile1$Labels
+)
+
+# Convert milestone codes to names using the custom names
+plot_data$Milestone <- variable_names[plot_data$Milestone]
+
+# Sort plot data by MeanAge to display the milestones in the order of their occurrence
+plot_data <- plot_data %>%
+  mutate(Milestone = factor(Milestone, levels = Milestone[order(MeanAge)])) %>%
+  arrange(MeanAge)
+
+# Generate the plot
+ggplot(plot_data, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') +  # Ensure the milestones are connected by a line
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) +  # Adjust the y-offset as needed
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 1: Mean Age and Probability of Non-Achievement (No Asexual)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Profile 2 No Asexual
+
+```{r no asex graph probs 2}
+# Step 1: Subset Data for Profile 2
+profile2_data <- GZMCoreNA_Weighted %>% filter(C == 2)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages2 <- profile2_data %>%
+  summarise(
+    m1 = mean(m1, na.rm = TRUE),
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile2_data %>%
+  summarise(
+    m1 = sd(m1, na.rm = TRUE),
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement
+mean_weighted_probs_profile2 <- profile2_data %>%
+  summarise(
+    weighted_bm1_profile2 = mean(weighted_bm1_profile2, na.rm = TRUE) * 100,
+    weighted_bm2_profile2 = mean(weighted_bm2_profile2, na.rm = TRUE) * 100,
+    weighted_bm3_profile2 = mean(weighted_bm3_profile2, na.rm = TRUE) * 100,
+    weighted_bm4_profile2 = mean(weighted_bm4_profile2, na.rm = TRUE) * 100,
+    weighted_bm5_profile2 = mean(weighted_bm5_profile2, na.rm = TRUE) * 100,
+    weighted_bm6_profile2 = mean(weighted_bm6_profile2, na.rm = TRUE) * 100,
+    weighted_bm7_profile2 = mean(weighted_bm7_profile2, na.rm = TRUE) * 100,
+    weighted_bm8_profile2 = mean(weighted_bm8_profile2, na.rm = TRUE) * 100
+  ) %>%
+  # Pivot the data to a long format
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("_profile2", "", Milestone),  # Clean up the milestone names
+    # Create a formatted label for plotting
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting
+plot_data2 <- tibble(
+  Milestone = names(mean_ages2),
+  MeanAge = unlist(mean_ages2),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile2$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile2$Labels
+)
+
+# Convert milestone codes to names using the custom names
+plot_data2$Milestone <- variable_names[plot_data2$Milestone]
+
+# Sort plot data by MeanAge to display the milestones in the order of their occurrence
+plot_data2 <- plot_data2 %>%
+  mutate(Milestone = factor(Milestone, levels = Milestone[order(MeanAge)])) %>%
+  arrange(MeanAge)
+
+# Generate the plot
+ggplot(plot_data2, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') +  # Ensure the milestones are connected by a line
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) +  # Adjust the y-offset as needed
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 2: Mean Age and Probability of Non-Achievement (No Asexual)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Profile 3 No Asexual
+
+```{r no asex graph probs 3}
+# Step 1: Subset Data for Profile 3
+profile3_data <- GZMCoreNA_Weighted %>% filter(C == 3)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages3 <- profile3_data %>%
+  summarise(
+    m1 = mean(m1, na.rm = TRUE),
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile3_data %>%
+  summarise(
+    m1 = sd(m1, na.rm = TRUE),
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement for Profile 3
+mean_weighted_probs_profile3 <- profile3_data %>%
+  summarise(
+    weighted_bm1_profile3 = mean(weighted_bm1_profile3, na.rm = TRUE) * 100,
+    weighted_bm2_profile3 = mean(weighted_bm2_profile3, na.rm = TRUE) * 100,
+    weighted_bm3_profile3 = mean(weighted_bm3_profile3, na.rm = TRUE) * 100,
+    weighted_bm4_profile3 = mean(weighted_bm4_profile3, na.rm = TRUE) * 100,
+    weighted_bm5_profile3 = mean(weighted_bm5_profile3, na.rm = TRUE) * 100,
+    weighted_bm6_profile3 = mean(weighted_bm6_profile3, na.rm = TRUE) * 100,
+    weighted_bm7_profile3 = mean(weighted_bm7_profile3, na.rm = TRUE) * 100,
+    weighted_bm8_profile3 = mean(weighted_bm8_profile3, na.rm = TRUE) * 100
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("profile3", "", Milestone),  # Clean up the milestone names
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting for Profile 3
+plot_data3 <- tibble(
+  Milestone = names(mean_ages3),
+  MeanAge = unlist(mean_ages3),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile3$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile3$Labels
+) %>%
+  mutate(MilestoneName = variable_names[Milestone]) %>%
+  arrange(MeanAge)
+
+# Ensure the Milestone column is a factor ordered by MeanAge
+plot_data3$Milestone <- factor(plot_data3$MilestoneName, levels = plot_data3$MilestoneName)
+
+# Generate the plot for Profile 3
+ggplot(plot_data3, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') + 
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) + 
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 3: Mean Age and Probability of Non-Achievement (No Asexual)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Profile 4 No Asexual
+
+```{r no asex graph probs 4}
+# Step 1: Subset Data for Profile 4
+profile4_data <- GZMCoreNA_Weighted %>% filter(C == 4)
+
+# Step 2: Calculate Mean Ages for Each Milestone
+mean_ages4 <- profile4_data %>%
+  summarise(
+    m1 = mean(m1, na.rm = TRUE),
+    m2 = mean(m2, na.rm = TRUE),
+    m3 = mean(m3, na.rm = TRUE),
+    m4 = mean(m4, na.rm = TRUE),
+    m5 = mean(m5, na.rm = TRUE),
+    m6 = mean(m6, na.rm = TRUE),
+    m7 = mean(m7, na.rm = TRUE),
+    m8 = mean(m8, na.rm = TRUE)
+  )
+
+standard_dev <- profile4_data %>%
+  summarise(
+    m1 = sd(m1, na.rm = TRUE),
+    m2 = sd(m2, na.rm = TRUE),
+    m3 = sd(m3, na.rm = TRUE),
+    m4 = sd(m4, na.rm = TRUE),
+    m5 = sd(m5, na.rm = TRUE),
+    m6 = sd(m6, na.rm = TRUE),
+    m7 = sd(m7, na.rm = TRUE),
+    m8 = sd(m8, na.rm = TRUE)
+  )
+
+# Step 3: Calculate Mean Weighted Probabilities of Non-Achievement for Profile 4
+mean_weighted_probs_profile4 <- profile4_data %>%
+  summarise(
+    weighted_bm1_profile4 = mean(weighted_bm1_profile4, na.rm = TRUE) * 100,
+    weighted_bm2_profile4 = mean(weighted_bm2_profile4, na.rm = TRUE) * 100,
+    weighted_bm3_profile4 = mean(weighted_bm3_profile4, na.rm = TRUE) * 100,
+    weighted_bm4_profile4 = mean(weighted_bm4_profile4, na.rm = TRUE) * 100,
+    weighted_bm5_profile4 = mean(weighted_bm5_profile4, na.rm = TRUE) * 100,
+    weighted_bm6_profile4 = mean(weighted_bm6_profile4, na.rm = TRUE) * 100,
+    weighted_bm7_profile4 = mean(weighted_bm7_profile4, na.rm = TRUE) * 100,
+    weighted_bm8_profile4 = mean(weighted_bm8_profile4, na.rm = TRUE) * 100
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Milestone",
+    names_prefix = "weighted_bm",
+    values_to = "MeanWeightedProb"
+  ) %>%
+  mutate(
+    Milestone = gsub("profile4", "", Milestone),  # Clean up the milestone names
+    Labels = sprintf("%.2f%%", MeanWeightedProb)  # Format as percentage with two decimal places
+  )
+
+# Step 4: Prepare Data for Plotting for Profile 4
+plot_data4 <- tibble(
+  Milestone = names(mean_ages4),
+  MeanAge = unlist(mean_ages4),
+  SD = unlist(standard_dev),
+  MeanWeightedProb = mean_weighted_probs_profile4$MeanWeightedProb,
+  Labels = mean_weighted_probs_profile4$Labels
+) %>%
+  mutate(MilestoneName = variable_names[Milestone]) %>%
+  arrange(MeanAge)
+
+# Ensure the Milestone column is a factor ordered by MeanAge
+plot_data4$Milestone <- factor(plot_data4$MilestoneName, levels = plot_data4$MilestoneName)
+
+# Generate the plot for Profile 4
+ggplot(plot_data4, aes(x = Milestone, group = 1)) +
+  geom_line(aes(y = MeanAge), color = 'blue') + 
+  geom_point(aes(y = MeanAge), color = 'blue', size = 3) +
+  geom_text(aes(y = MeanAge - 0.5, label = Labels), color = 'red', vjust = 1) + 
+  scale_y_continuous(name = "Mean Age of Milestone Achievement") +
+  labs(x = "Milestone", title = "Profile 4: Mean Age and Probability of Non-Achievement (No Asexual)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### All 4-Profiles
+
+```{r full profile sequences}
+all_plot_data <- bind_rows(
+  plot_data %>% mutate(Profile = "Profile 1"),
+  plot_data2 %>% mutate(Profile = "Profile 2"),
+  plot_data3 %>% mutate(Profile = "Profile 3"),
+  plot_data4 %>% mutate(Profile = "Profile 4")
+)
+
+# Establish milestone order from Profile 3
+milestone_order <- plot_data3 %>% arrange(MeanAge) %>% pull(Milestone)
+
+# Use the order to arrange milestones in the combined plot data
+all_plot_data <- all_plot_data %>%
+  mutate(Milestone = factor(Milestone, levels = milestone_order))
+
+# Plotting all profiles on a single graph
+ggplot(all_plot_data, aes(x = Milestone, y = MeanAge, color = Profile, shape = Profile, group = Profile)) +
+  geom_line() +  # Connecting lines for each profile
+  geom_point(size = 3) +  # Points at each milestone with different shapes
+  scale_shape_manual(values = c(10, 12, 13, 14)) +  # Manually assign shapes to each profile
+  labs(
+    x = "Milestone",
+    y = "Mean Age of Milestone Achievement"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"  # Positioning the legend on the right side
+  ) +
+  scale_color_brewer(
+    palette = "Set1", 
+    labels = c(
+      expression("Profile 1 (" * italic(n) * "=82)"), 
+      expression("Profile 2 (" * italic(n) * "=96)"), 
+      expression("Profile 3 (" * italic(n) * "=198)"), 
+      expression("Profile 4 (" * italic(n) * "=34)")
+    )
+  ) +
+  guides(
+    color = guide_legend(override.aes = list(shape = c(10, 12, 13, 14))),  # Combine shape and color in one legend
+    shape = "none"  # Remove the redundant shape legend
+  )
+```
+
+<a class="top-link hide" href="#top" onclick="window.scrollTo({top: 0, behavior: 'smooth'}); return false;">↑</a>
+
+<script>
+  var mybutton = document.querySelector('.top-link');
+  window.onscroll = function() {
+    if (document.body.scrollTop > 20 || document.documentElement.scrollTop > 20) {
+      mybutton.classList.remove('hide');
+    } else {
+      mybutton.classList.add('hide');
+    }
+  };
+</script>

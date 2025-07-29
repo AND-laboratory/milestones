@@ -51,7 +51,15 @@ kable(milestone_frequencies, format = "markdown", col.names = c("Milestone", "Fr
 Frequency of each milestone by demographic subgroup
 
 ```{r milestone breakdown, include=TRUE}
-demographic_variables <- c("IdentitySex", "GenderGroup", "SexualityGroup", "RaceDemog", "IdentityDisability", "IdentityNeuro", "ReligionDemog", "SchoolYear")
+# Create a new variable for analysis that groups based on POC and White due to small sample sizes of races.
+GZMCore <- GZMCore %>%
+  mutate(RaceAnalysis = case_when(
+    RaceDemog %in% c(6) ~ as.factor(RaceDemog),  # Retain values 6 "White"
+    RaceDemog %in% c(1, 2, 3, 4, 5, 7, 9) ~ as.factor(1),   # Recode values 1, 3, 4, 5, and 7 as 1 "POC"
+    RaceDemog == 8 ~ as.factor(NA)             # Recode value 8 as NA "Prefer not to say"
+  ))
+
+demographic_variables <- c("IdentitySex", "GenderGroup", "SexualityGroup", "RaceAnalysis", "IdentityDisability", "IdentityNeuro", "ReligionDemog", "SchoolYear")
 
 milestones <- c("MAttraction", "MSelfIdentity", "MSAHom", "MSAHet", "MRHom", "MRHet", "MComingOut", "MComingOutFamily4")
 
@@ -87,6 +95,26 @@ for (var in demographic_variables) {
 demographic_freq_list
 ```
 
+```{r new race demographics, include=TRUE}
+# RaceAnalysis Demographics
+RaceAnalysis <- "RaceAnalysis"
+
+labels_race <- c(
+  "1 - POC",
+  "6 - White"
+)
+
+frequency_race <- table(factor(GZMCore[[RaceAnalysis]], levels = c(1, 6), labels = labels_race))
+
+percentage_race <- prop.table(frequency_race) * 100
+
+cat("Frequency of", RaceAnalysis, ":\n")
+print(frequency_race)
+
+cat("\nPercentage of sample for", RaceAnalysis, ":\n")
+print(percentage_race)
+```
+
 # Differences in Reported Milestones
 ## Chi-Square variable preparation
 
@@ -94,13 +122,6 @@ demographic_freq_list
 # Create new variable for analyses where only male and female SAB are included
 GZMCore$IdentitySexAnalysis <- ifelse(GZMCore$IdentitySex %in% c(1, 2), GZMCore$IdentitySex, NA)
 GZMCore$IdentitySexAnalysis <- factor(GZMCore$IdentitySexAnalysis)
-# Create a new variable for analysis that groups based on POC and White due to small sample sizes of races.
-GZMCore <- GZMCore %>%
-  mutate(RaceAnalysis = case_when(
-    RaceDemog %in% c(6) ~ as.factor(RaceDemog),  # Retain values 6 "White"
-    RaceDemog %in% c(1, 2, 3, 4, 5, 7, 9) ~ as.factor(1),   # Recode values 1, 3, 4, 5, and 7 as 1 "POC"
-    RaceDemog == 8 ~ as.factor(NA)             # Recode value 8 as NA "Prefer not to say"
-  ))
 
 # recode prefer not to say participants as missing data
 GZMCore$ReligionDemog <- ifelse(GZMCore$ReligionDemog == 3, NA, GZMCore$ReligionDemog)
@@ -184,6 +205,13 @@ chi_square_results_df <- do.call(rbind, chi_square_results_list)
 # Format ChiSquare and PValue columns
 chi_square_results_df$ChiSquare <- format(chi_square_results_df$ChiSquare, scientific = FALSE, digits = 4)
 chi_square_results_df$PValue <- format(chi_square_results_df$PValue, scientific = FALSE, digits = 4)
+
+# Print the result table with formatting
+result_table_kable <- kable(chi_square_results_df, align = "c", caption = "Chi-Square Test Results") %>%
+  kable_styling()
+
+# Export the table to an HTML file
+save_kable(result_table_kable, file = "chi_square_results.html")
 ```
 
 

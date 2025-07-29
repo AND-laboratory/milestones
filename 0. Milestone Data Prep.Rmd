@@ -1,0 +1,765 @@
+---
+title: "Milestone Data Preparation"
+author: "WWar"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Set Up
+
+```{r packages, include=TRUE}
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(psych)
+library(knitr)
+library(kableExtra)
+library(emmeans)
+library(readxl)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("C:/your file path")
+GZMCore <- read_excel("GZMCoreDataRaw.xlsx")
+set.seed(99)
+```
+
+# Instructions
+
+This is some extra behind the scene for the data cleaning, demographic calculations, and the alpha scores/scoring of the scales used. This uses a more unrefined dataset initially, though identifiable information has still been removed from this - including all TEXT columns where participants provided manual inputs to demographic questions, some of which were quite detailed and potentially identifiable in combination with other data. Text input columns already removed include: 
+
+- neurodivergence and disability status; reasoning is unique combinations of disorders and conditions listed can be identifiable in combination with other data
+- state/territory of residence, race, ethnicity, and religion; same reasoning as above (this can be released to any interested university-affiliated academic on request)
+- school type; Australia has a lot of unique private schools and religious schools, especially by different state, so these can be easily identifiable in combination with other data
+- specific family member who participants came out to; was not used in analysis and is identifiable based on specific response cases as additional context was often given
+
+
+# Data Cleaning
+
+```{r eligibility & cleaning, include=TRUE}
+n_start <- nrow(GZMCore)
+
+# Step 1: Remove responses under 95% completion
+step1 <- GZMCore %>%
+  filter(Progress >= 95)
+cat("Step 1 removed", n_start - nrow(step1), "rows\n")
+
+# Step 2: Remove 100% complete responses with Consent == 0 or IdentitySexuality == 5
+step2 <- step1 %>%
+  filter(!(Progress == 100 & (Consent == 0 | IdentitySexuality == 5)))
+cat("Step 2 removed", nrow(step1) - nrow(step2), "rows\n")
+
+# Step 3: Filter for attention check (ACQ1 == 5 & ACQ2 == 4)
+step3 <- step2 %>%
+  filter(ACQ1 == 5 & ACQ2 == 4)
+cat("Step 3 removed", nrow(step2) - nrow(step3), "rows\n")
+
+# Delete troll response
+# Gender identity was cisgender male and sexuality was: “straight pussy lover”. Responded the same value (1) to over 90% of measures.
+# Step 4: Remove specific inappropriate text entry
+step4 <- step3 %>%
+  filter(is.na(IdentitySexualityTEXT) | IdentitySexualityTEXT != "A straight pussy lover")
+cat("Step 4 removed", nrow(step3) - nrow(step4), "rows\n")
+
+# Final cleaned data
+GZMCore <- step4
+```
+
+```{r min milestone age, include=TRUE}
+# Recode values under 8 to be 8 in milestone TEXT variables
+milestone_text_cols <- c("MAttractionTEXT", "MSelfIdentityTEXT", "MSAHomTEXT", "MSAHetTEXT", "MRHomTEXT", "MRHetTEXT", "MComingOutTEXT", "MComingOutFamily4TEXT")
+
+GZMCore[milestone_text_cols] <- lapply(GZMCore[milestone_text_cols], function(x) ifelse(x < 8, 8, x))
+```
+
+```{r recode values for analysis, include=TRUE}
+# recode SAB text entry as female
+# "my sex assigned was female, but my birth certificate now says male"
+GZMCore <- GZMCore %>%
+  mutate(IdentitySex = ifelse(IdentitySex == 4, 2, IdentitySex))
+```
+
+# Demographic Information
+
+## Age
+```{r age, include=TRUE}
+# Define a mapping of values to ages
+age_mapping <- c(16:26)
+
+GZMCore <- GZMCore %>%
+  mutate(AgeCurrent = age_mapping[AgeCurrent])
+
+age_mean <- mean(GZMCore$AgeCurrent)
+age_sd <- sd(GZMCore$AgeCurrent)
+
+cat("Mean Age:", age_mean, "\n")
+cat("Standard Deviation of Age:", age_sd, "\n")
+```
+
+## Survey Duration
+```{r duration, include=TRUE}
+# Function to calculate average duration after removing outliers
+calculate_average_duration <- function(GZMCore, multiplier) {
+  
+# Calculate the IQR of the Durationsec column
+Q1 <- quantile(GZMCore$Durationsec, 0.25)
+Q3 <- quantile(GZMCore$Durationsec, 0.75)
+IQR <- Q3 - Q1
+  
+lower_bound <- Q1 - multiplier * IQR
+upper_bound <- Q3 + multiplier * IQR
+  
+filtered_data <- subset(GZMCore, Durationsec >= lower_bound & Durationsec <= upper_bound)
+  
+average_duration_minutes <- mean(filtered_data$Durationsec / 60)
+  
+cat("Average survey completion time (after removing outliers):", average_duration_minutes, "minutes\n")}
+
+# Calculate with a multiplier of 1.5 to be conservative and identify mild outliers
+calculate_average_duration(GZMCore, 1.5)
+```
+
+## School Demographics
+### School Type
+```{r demographics, include=TRUE}
+# School Type
+schooltype <- "SchoolType"
+  
+labels_schooltype <- c(
+    "1 - Public",
+    "2 - Private Independent",
+    "3 - Private Religious",
+    "4 - Specialist School",
+    "5 - Homeschooling",
+    "6 - Other")
+  
+frequency_schooltype <- table(factor(GZMCore[[schooltype]], levels = 1:6, labels = labels_schooltype))
+percentage_schooltype <- prop.table(frequency_schooltype) * 100
+  
+cat("Frequency of", schooltype, ":\n")
+print(frequency_schooltype)
+
+cat("\nPercentage of sample for", schooltype, ":\n")
+print(percentage_schooltype)
+```
+
+### School Location
+```{r demographics, include=TRUE}
+# School Location
+schoollocation <- "SchoolLocation"
+  
+labels_schoollocation <- c(
+    "1 - Urban or City",
+    "2 - Suburban",
+    "3 - Rural or Small Town")
+  
+frequency_schoollocation <- table(factor(GZMCore[[schoollocation]], levels = 1:3, labels = labels_schoollocation))
+percentage_schoollocation <- prop.table(frequency_schoollocation) * 100
+  
+cat("Frequency of", schoollocation, ":\n")
+print(frequency_schoollocation)
+
+cat("\nPercentage of sample for", schoollocation, ":\n")
+print(percentage_schoollocation)
+```
+
+### School Year
+```{r demographics, include=TRUE}
+# School Year
+schoolyear <- "SchoolYear"
+  
+labels_schoolyear <- c(
+    "1 - Yes (please state your year level)",
+    "2 - No",
+    "3 - Prefer not to say")
+  
+frequency_schoolyear <- table(factor(GZMCore[[schoolyear]], levels = 1:3, labels = labels_schoolyear))
+percentage_schoolyear <- prop.table(frequency_schoolyear) * 100
+  
+cat("Frequency of", schoolyear, ":\n")
+print(frequency_schoolyear)
+
+cat("\nPercentage of sample for", schoolyear, ":\n")
+print(percentage_schoolyear)
+
+# Split the data frame into two groups based on SchoolYear
+highschool <- GZMCore[GZMCore$SchoolYear == 1, ]
+outhighschool <- GZMCore[GZMCore$SchoolYear == 2, ]
+```
+
+### School Year Level
+```{r demographics, include=TRUE}
+# Year Level Breakdown
+yearlvl <- "SchoolYearTEXT"
+  
+frequency_yearlvl <- table(GZMCore[[yearlvl]])
+percentage_yearlvl <- prop.table(frequency_yearlvl) * 100
+
+cat("Frequency of", yearlvl, ":\n")
+print(frequency_yearlvl)
+
+cat("\nPercentage of sample for", yearlvl, ":\n")
+print(percentage_yearlvl)
+```
+
+## Race
+```{r demographics, include=TRUE}
+# Create RaceDemog
+race <- "IdentityRace"
+
+labels_race <- c(
+    "1 - Aboriginal or Torres Strait Islander",
+    "2 - Asian",
+    "3 - Black",
+    "4 - Indian",
+    "5 - Pasifika/Maori",
+    "6 - White/Caucasian",
+    "7 - My race is not listed (please describe)",
+    "8 - Prefer not to say",
+    "9 - Mixed race")
+
+# Create a function to recode and calculate frequency and percentage for each selected race
+race_stats <- function(GZMCore, variable) {
+  # Recode responses with multiple values to "Mixed Race" (9)
+  GZMCore$RaceDemog <- sapply(GZMCore[[variable]], function(x) {
+    values <- unique(as.numeric(unlist(strsplit(as.character(x), ","))))
+    if (any(values > 0 & values <= 7) && length(values) > 1) {
+      return("9")
+    } else {
+      return(as.character(values))
+    }
+  })
+  
+# Ensure "Mixed Race" is included in the levels
+GZMCore$RaceDemog <- factor(GZMCore$RaceDemog, levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9"))
+
+# Descriptives
+frequency_race <- table(factor(GZMCore$RaceDemog, levels = 1:9, labels = labels_race))
+percentage_race <- prop.table(frequency_race) * 100
+
+cat("Frequency of", variable, ":\n")
+print(frequency_race)
+
+cat("\nPercentage of sample for", variable, ":\n")
+print(percentage_race)
+  
+# Return the modified data with the new variable
+return(GZMCore)
+}
+
+# Call the function and attach the results to GZMCore
+GZMCore <- race_stats(GZMCore, race)
+```
+
+## Religion
+```{r demographics, include=TRUE}
+# Create ReligionDemog
+religion <- "IdentityReligion"
+
+religion_labels <- c(
+  1, # Is religious,
+  2, # Is not religious,
+  3) # Prefer not to say
+
+# Create a function to calculate frequency, percentage, and create a new variable
+religion_stats <- function(GZMCore, variable) {
+  # Recode responses to new categories
+  GZMCore$ReligionDemog <- ifelse(GZMCore[[variable]] %in% 1:6, 1,  # Values 1 to 6
+                                  ifelse(GZMCore[[variable]] == 7, 3,  # Value 7
+                                         ifelse(GZMCore[[variable]] == 8, 2, NA)))  # Value 8 and others
+
+  # Descriptives
+  frequency_religion <- table(factor(GZMCore$ReligionDemog, levels = 1:3, labels = religion_labels))
+  percentage_religion <- prop.table(frequency_religion) * 100
+
+  cat("Frequency of", variable, ":\n")
+  print(frequency_religion)
+
+  cat("\nPercentage of total sample for", variable, ":\n")
+  print(percentage_religion)
+
+  cat("\nNew variable 'ReligionDemog' created:\n")
+  print(GZMCore$ReligionDemog)
+
+  # Attach the new variable to the data frame
+  GZMCore$ReligionDemog <- factor(GZMCore$ReligionDemog, levels = c(1, 2, 3),
+                                  labels = religion_labels)
+  
+  return(GZMCore)
+}
+
+# Call the function and update the dataframe
+GZMCore <- religion_stats(GZMCore, religion)
+```
+
+## Disability Status
+```{r demographics, include=TRUE}
+# Disability
+disability <- "IdentityDisability"
+  
+# Define labels for values
+  labels_disability <- c(
+    "4 = Yes",
+    "5 = No",
+    "6 = Prefer not to say"
+  )
+  
+frequency_disability <- table(factor(GZMCore[[disability]], levels = 4:6, labels = labels_disability))
+percentage_disability <- prop.table(frequency_disability) * 100
+
+cat("Frequency of", disability, ":\n")
+print(frequency_disability)
+
+cat("\nPercentage of sample for", disability, ":\n")
+print(percentage_disability)
+```
+
+## Neurodivergence
+```{r demographics, include=TRUE}
+# Self-identified as neurodivergent
+neuro <- "IdentityNeuro"
+  
+# Define labels for values
+  labels_neuro <- c(
+    "1 = Yes",
+    "2 = No",
+    "3 = Prefer not to say"
+  )
+  
+frequency_neuro <- table(factor(GZMCore[[neuro]], levels = 1:3, labels = labels_neuro))
+percentage_neuro <- prop.table(frequency_neuro) * 100
+
+cat("Frequency of", neuro, ":\n")
+print(frequency_neuro)
+
+cat("\nPercentage of sample for", neuro, ":\n")
+print(percentage_neuro)
+```
+
+## Sexual Identity
+
+NOT USED IN TABLES/REPORTING
+
+```{r demographics, include=TRUE}
+# SexualIdentity
+  sexuality <- "IdentitySexuality"
+  
+# Define labels for values
+  labels_sexuality <- c(
+    "1 = Lesbian",
+    "2 = Mostly attracted to girls",
+    "3 = Gay",
+    "4 = Mostly attracted to boys",
+    "5 = Straight",
+    "6 = Bisexual",
+    "7 = Queer",
+    "8 = Questioning",
+    "9 = Asexual",
+    "10 = Pansexual",
+    "11 = My preferred sexual identity (or at least one of them) isn't listed. I identify as:",
+    "12 = Prefer not to say"
+  )
+  
+# Create a function to calculate frequency and percentage for each selected sexual orientation
+sexuality_stats <- function(GZMCore, variable) {
+  # Split the multiple responses
+  selected_sexualities <- unlist(strsplit(as.character(GZMCore[[variable]]), ","))
+    
+# Descriptives
+frequency_sexuality <- table(factor(selected_sexualities, levels = 1:12, labels = labels_sexuality))
+percentage_sexuality <- prop.table(frequency_sexuality) * 100
+    
+cat("Frequency of", variable, ":\n")
+print(frequency_sexuality)
+    
+cat("\nPercentage of sample for", variable, ":\n")
+print(percentage_sexuality)}
+  
+# Call the function
+sexuality_stats(GZMCore, sexuality)
+```
+
+## Gender Identity
+
+NOT USED IN TABLES/REPORTING
+
+```{r demographics, include=TRUE}
+# IdentityGender
+gender <- "IdentityGender"
+  
+# Define labels for values
+  labels_gender <- c(
+    "1 = Male / man",
+    "2 = Female / woman",
+    "3 = Non-binary",
+    "4 = Genderfluid",
+    "5 = Trans / gender diverse",
+    "6 = My gender identity (or at least one of them) isn’t listed. I identify as:",
+    "7 = Prefer not to say"
+  )
+  
+# Create a function to calculate frequency and percentage for each selected gender identity
+gender_stats <- function(GZMCore, variable) {
+  # Split the multiple responses
+  selected_genders <- unlist(strsplit(as.character(GZMCore[[variable]]), ","))
+
+# Descriptives 
+frequency_gender <- table(factor(selected_genders, levels = 1:7, labels = labels_gender))
+percentage_gender <- prop.table(frequency_gender) * 100
+    
+cat("Frequency of", variable, ":\n")
+print(frequency_gender)
+    
+cat("\nPercentage of sample for", variable, ":\n")
+print(percentage_gender)  }
+  
+# Call the function
+gender_stats(GZMCore, gender)
+```
+
+## Sex Assigned at Birth
+```{r demographics, include=TRUE}
+# SASAB
+sex <- "IdentitySex"
+  
+# Define labels for values
+labels_sex <- c(
+    "1 = Male",
+    "2 = Female",
+    "3 = Intersex",
+    "4 = My sex assigned at birth is not listed here (please describe):",
+    "5 = Prefer not to say"
+  )
+  
+# Create a function to calculate frequency and percentage for each selected sex identity
+calculate_sex_stats <- function(GZMCore, variable) {
+  # Split the multiple responses
+  selected_sexes <- unlist(strsplit(as.character(GZMCore[[variable]]), ","))
+
+# Descriptives
+frequency_sex <- table(factor(selected_sexes, levels = 1:5, labels = labels_sex))
+percentage_sex <- prop.table(frequency_sex) * 100
+    
+cat("Frequency of", variable, ":\n")
+print(frequency_sex)
+    
+cat("\nPercentage of sample for", variable, ":\n")
+print(percentage_sex)  }
+  
+# Call the function
+calculate_sex_stats(GZMCore, sex)
+```
+
+## Identity Categorisation
+### Gender
+```{r gender identity, include=TRUE}
+GZMCore$GenderGroup <- NA
+
+# Function to categorise participants based on Gender Identity and Sex
+categorise_gender_group <- function(gender_identity, sex, gender_text) {
+  gender_values <- unlist(strsplit(gender_identity, ","))  # Split multiple values
+  
+  if ("6" %in% gender_values) {
+    if (grepl("\\b\\w*(gender|queer|question|confused|unsure)\\w*\\b", gender_text, ignore.case = TRUE)) {
+      return("Gender-Expansive Individuals")
+    } else if (grepl("\\b\\w*(girl|fem)\\w*\\b", gender_text, ignore.case = TRUE) && sex == 1) {
+      return("Transfeminine Individuals")
+    } else if (grepl("\\b\\w*(boy|masc)\\w*\\b", gender_text, ignore.case = TRUE) && sex == 2) {
+      return("Transmasculine Individuals")
+    } else {
+      return("Unclassified")
+    }
+  } else if (length(gender_values) == 1 && "1" %in% gender_values && sex == 1) {
+    return("Cisgender Sexual Diverse Men")
+  } else if (length(gender_values) == 1 && "2" %in% gender_values && sex == 2) {
+    return("Cisgender Sexual Diverse Women")
+  } else if (length(gender_values) == 1 && "5" %in% gender_values) {
+    if (sex == 1) {
+      return("Transfeminine Individuals")
+    } else if (sex == 2) {
+      return("Transmasculine Individuals")
+    }
+  } else if (any("2" %in% gender_values) && sex == 1) {
+    return("Transfeminine Individuals")
+  } else if (any("1" %in% gender_values) && sex == 2) {
+    return("Transmasculine Individuals")
+  } else if ((any(c("3", "4") %in% gender_values) || length(setdiff(c("3", "4"), gender_values)) == 0) && sex %in% c(1, 2, 3, 4)) {
+    return("Gender-Expansive Individuals")
+  } else if ("5" %in% gender_values && sex %in% c(1, 2, 3, 4)) {
+    return("Gender-Expansive Individuals")
+  } else {
+    return("Unclassified")
+  }
+}
+
+# Apply the function to each row
+GZMCore$GenderGroup <- mapply(categorise_gender_group, GZMCore$IdentityGender, GZMCore$IdentitySex, GZMCore$IdentityGenderTEXT)
+
+# Check for any unclassified participants
+outlier_data_gender <- GZMCore[GZMCore$GenderGroup == "Unclassified", c("GenderGroup", "IdentityGender", "IdentityGenderTEXT", "IdentitySex")]
+
+comparison_data_gender <- GZMCore[, c("GenderGroup", "IdentityGender", "IdentitySexuality", "IdentityGenderTEXT", "IdentitySex")]
+
+# Recode GenderGroup to numeric
+levels <- c("Cisgender Sexual Diverse Men", "Cisgender Sexual Diverse Women", "Gender-Expansive Individuals", "Transfeminine Individuals", "Transmasculine Individuals")
+gendernumeric_values <- c(1, 2, 3, 4, 5)
+
+GZMCore$GenderGroup <- as.numeric(factor(GZMCore$GenderGroup, levels = levels, labels = gendernumeric_values))
+
+# Demographic stats
+gender_freq <- table(GZMCore$GenderGroup, useNA = "ifany")
+gender_percent <- prop.table(gender_freq) * 100
+
+gender_summary <- data.frame(
+  GenderGroup = names(gender_freq),
+  Frequency = as.vector(gender_freq),
+  Percentage = round(as.vector(gender_percent), 2)
+)
+
+# Print combined table
+print(gender_summary)
+```
+
+### Sexuality
+Categorising a sexual identity variable similar to the approach taken above.
+Taking asexuality as a spectrum (Catri, 2021; Hille, 2023), priority was given to asexuality distinctions.
+
+```{r sexual identity, include=TRUE}
+GZMCore$SexualityGroup <- NA
+
+# Function to categorise participants based on Sexuality and SexualityTEXT
+categorise_sexuality_group <- function(sexuality_identity, sexuality_text) {
+  sexuality_values <- unlist(strsplit(sexuality_identity, ","))  # Split multiple values
+  
+  if ("6" %in% sexuality_values || "10" %in% sexuality_values) {
+    return("Plurisexual")
+  } else if (any(sexuality_values %in% c("1", "2", "3", "4")) && !("9" %in% sexuality_values)) {
+    return("Monosexual")
+  } else if ("9" %in% sexuality_values) {
+    return("Asexual")
+  } else if ("7" %in% sexuality_values || "8" %in% sexuality_values) {
+    return("Queer")
+  } else {
+    return("Unclassified")
+  }
+}
+
+# Apply the function to each row
+GZMCore$SexualityGroup <- mapply(categorise_sexuality_group, GZMCore$IdentitySexuality, GZMCore$IdentitySexualityTEXT)
+
+# Check for any unclassified participants
+outlier_data_sexuality <- GZMCore[GZMCore$SexualityGroup == "Unclassified", c("SexualityGroup", "IdentitySexuality", "IdentitySexualityTEXT")]
+
+comparison_data_sexuality <- GZMCore[, c("SexualityGroup", "IdentitySexuality", "IdentitySexualityTEXT")]
+
+# Recode GenderGroup to numeric
+levels <- c("Monosexual", "Plurisexual", "Asexual", "Queer")
+sexnumeric_values <- c(1, 2, 3, 4)
+
+GZMCore$SexualityGroup <- as.numeric(factor(GZMCore$SexualityGroup, levels = levels, labels = sexnumeric_values))
+
+# categorise participants with 'Aroace' as 3 in 'SexualityGroup'
+GZMCore$SexualityGroup[GZMCore$IdentitySexualityTEXT == "Aroace"] <- 3
+
+# categorise participants with 'Nomasexual' as 2 in 'SexualityGroup'
+GZMCore$SexualityGroup[GZMCore$IdentitySexualityTEXT == "Nomasexual"] <- 2
+
+# Check for any unclassified participants
+outlier_data_sexuality <- GZMCore[GZMCore$SexualityGroup == "Unclassified", c("SexualityGroup", "IdentitySexuality", "IdentitySexualityTEXT")]
+
+# Demographic stats
+sexuality_freq <- table(GZMCore$SexualityGroup, useNA = "ifany")
+sexuality_percent <- prop.table(sexuality_freq) * 100
+
+sexuality_summary <- data.frame(
+  SexualityGroup = names(sexuality_freq),
+  Frequency = as.vector(sexuality_freq),
+  Percentage = round(as.vector(sexuality_percent), 2)
+)
+
+# Print combined table
+print(sexuality_summary)
+```
+
+# Scale Scoring
+
+## Rejection Sensitivity
+```{r SMA-RSS, include=TRUE}
+# Create new columns for each multiplied pair
+  GZMCore$HSS1 <- GZMCore$HSS1Q1 * GZMCore$HSS1Q2
+  GZMCore$HSS2 <- GZMCore$HSS2Q1 * GZMCore$HSS2Q2
+  GZMCore$HSS3 <- GZMCore$HSS3Q1 * GZMCore$HSS3Q2
+  GZMCore$HSS4 <- GZMCore$HSS4Q1 * GZMCore$HSS4Q2
+  GZMCore$HSS5 <- GZMCore$HSS5Q1 * GZMCore$HSS5Q2
+  GZMCore$HSS6 <- GZMCore$HSS6Q1 * GZMCore$HSS6Q2
+  GZMCore$HSS7 <- GZMCore$HSS7Q1 * GZMCore$HSS7Q2
+  GZMCore$HSS8 <- GZMCore$HSS8Q1 * GZMCore$HSS8Q2
+  GZMCore$HSS9 <- GZMCore$HSS9Q1 * GZMCore$HSS9Q2
+  GZMCore$HSS10 <- GZMCore$HSS10Q1 * GZMCore$HSS10Q2
+  GZMCore$HSS11 <- GZMCore$HSS11Q1 * GZMCore$HSS11Q2
+  GZMCore$HSS12 <- GZMCore$HSS12Q1 * GZMCore$HSS12Q2
+  GZMCore$HSS13 <- GZMCore$HSS13Q1 * GZMCore$HSS13Q2
+  GZMCore$HSS14 <- GZMCore$HSS14Q1 * GZMCore$HSS14Q2
+  
+# Calculate the sum of the multiplied columns for individual items only
+GZMCore$SMA_RSS <- rowSums(GZMCore[, grepl("^HSS\\d+$", names(GZMCore))])
+
+# Divide the sum by the total number of items (14)
+GZMCore$SMA_RSS <- GZMCore$SMA_RSS / 14
+
+# Cronbach's alpha
+sma_rss_data <- GZMCore[, grepl("^HSS\\d+$", names(GZMCore))]
+
+cronbach_alpha_rs <- alpha(sma_rss_data)$total$raw_alpha
+
+print(cronbach_alpha_rs)
+```
+
+## Internalised Homonegativity
+```{r IntHom, include=TRUE}
+# Sum scale
+GZMCore <- GZMCore %>%
+  mutate(IntHom = IntHom1 + IntHom2 + IntHom3)
+
+# Cronbach's alpha
+ih_data <- GZMCore[, grepl("^IntHom\\d+$", names(GZMCore))]
+
+cronbach_alpha_ih <- alpha(ih_data)$total$raw_alpha
+
+print(cronbach_alpha_ih)
+```
+
+## Emotion Dysregulation
+```{r DERS, include=TRUE}
+# Calculate subscales
+GZMCore$Clarity <- GZMCore$DERS1 + GZMCore$DERS2
+GZMCore$Goals <- GZMCore$DERS3 + GZMCore$DERS7 + GZMCore$DERS15
+GZMCore$Impulse <- GZMCore$DERS4 + GZMCore$DERS8 + GZMCore$DERS11
+GZMCore$Strategies <- GZMCore$DERS5 + GZMCore$DERS6 + GZMCore$DERS12 + GZMCore$DERS14 + GZMCore$DERS16
+GZMCore$Nonacceptance <- GZMCore$DERS9 + GZMCore$DERS10 + GZMCore$DERS13
+  
+# Calculate full scale score
+GZMCore$DERS <- rowSums(GZMCore[, c("Clarity", "Goals", "Impulse", "Strategies", "Nonacceptance")], na.rm = TRUE)
+  
+# Calculate Cronbach's alpha for each subscale and the total score
+alpha_clarity <- alpha(GZMCore[, c("DERS1", "DERS2")])$total$raw_alpha
+alpha_goals <- alpha(GZMCore[, c("DERS3", "DERS7", "DERS15")])$total$raw_alpha
+alpha_impulse <- alpha(GZMCore[, c("DERS4", "DERS8", "DERS11")])$total$raw_alpha
+alpha_strategies <- alpha(GZMCore[, c("DERS5", "DERS6", "DERS12", "DERS14", "DERS16")])$total$raw_alpha
+alpha_nonacceptance <- alpha(GZMCore[, c("DERS9", "DERS10", "DERS13")])$total$raw_alpha
+alpha_total <- alpha(GZMCore[, c("Clarity", "Goals", "Impulse", "Strategies", "Nonacceptance")])$total$raw_alpha
+
+cat("Alpha Clarity (Total):", alpha_clarity, "\n")
+cat("Alpha Goals (Total):", alpha_goals, "\n")
+cat("Alpha Impulse (Total):", alpha_impulse, "\n")
+cat("Alpha Strategies (Total):", alpha_strategies, "\n")
+cat("Alpha Nonacceptance (Total):", alpha_nonacceptance, "\n")
+cat("Alpha Total:", alpha_total, "\n")
+```
+
+## Self-Acceptance of Sexuality Inventory
+```{r SASI, include=TRUE}
+# Reverse score subscale items
+sasi_items <- c("SASI1", "SASI2", "SASI3", "SASI4", "SASI5", "SASI6", "SASI7", "SASI8", "SASI9", "SASI10")
+reverse_items <- c(1, 3, 5, 7, 9)
+max_score <- 6 # scale items are from 1 to 5
+GZMCore[, sasi_items[reverse_items]] <- max_score - GZMCore[, sasi_items[reverse_items]]
+
+# Calculate SASI subscales
+GZMCore$goodsasi <- GZMCore$SASI1 + GZMCore$SASI3 + GZMCore$SASI5 + GZMCore$SASI7 + GZMCore$SASI9
+GZMCore$badsasi <- GZMCore$SASI2 + GZMCore$SASI4 + GZMCore$SASI6 + GZMCore$SASI8 + GZMCore$SASI10
+
+# Full SASI
+GZMCore$SASI <- GZMCore$goodsasi + GZMCore$badsasi
+
+# Calculate Cronbach's alpha
+alpha_goodsasi <- alpha(GZMCore[, c("SASI1", "SASI3", "SASI5", "SASI7", "SASI9")])$total$raw_alpha
+alpha_badsasi <- alpha(GZMCore[, c("SASI2", "SASI4", "SASI6", "SASI8", "SASI10")])$total$raw_alpha
+alpha_total_SASI <- alpha(GZMCore[, c("goodsasi", "badsasi")])$total$raw_alpha
+
+# Print the alpha levels
+cat("Alpha for goodsasi:", alpha_goodsasi, "\n")
+cat("Alpha for badsasi:", alpha_badsasi, "\n")
+cat("Alpha for total SASI:", alpha_total_SASI, "\n")
+```
+
+## Pubertal Development Scale
+```{r RPDS, include=TRUE}
+# Score RPDS
+GZMCore <- GZMCore %>%
+  mutate(PDS = PDS1_1 + PDS1_2 + PDS1_3 + PDS1_4 + PDS1_5 + PDS1_6 + PDS1_7)
+
+# Cronbach's alpha
+pds_data <- GZMCore[, grepl("^PDS1_\\d+$", names(GZMCore))]
+
+cronbach_alpha_pds <- psych::alpha(pds_data)$total$raw_alpha
+
+print(cronbach_alpha_pds)
+
+# Set single item as RPDS variable
+old_name <- "PDS1_4"
+new_name <- "RPDS"
+names(GZMCore)[names(GZMCore) == old_name] <- new_name
+cat("Variable name has been changed from", old_name, "to", new_name, "\n")
+```
+
+# Final Variable Creation
+
+```{r convert to categorical, include=TRUE}
+# Convert RaceDemog to categorical
+GZMCore$RaceDemog <- factor(GZMCore$RaceDemog)
+# Convert ReligionDemog to categorical
+GZMCore$ReligionDemog <- factor(GZMCore$ReligionDemog)
+# Convert SexualityGroup to categorical
+GZMCore$SexualityGroup <- factor(GZMCore$SexualityGroup)
+# Convert GenderGroup to categorical
+GZMCore$GenderGroup <- factor(GZMCore$GenderGroup)
+# Convert IdentitySex to categorical
+GZMCore$IdentitySex <- factor(GZMCore$IdentitySex)
+# Convert IdentityDisability to categorical
+GZMCore$IdentityDisability <- factor(GZMCore$IdentityDisability)
+# Convert IdentityNeuro to categorical
+GZMCore$IdentityNeuro <- factor(GZMCore$IdentityNeuro)
+```
+
+```{r cleaning, include=TRUE}
+# Remove excess columns
+columns_to_remove <- c(
+  "Progress", "Durationsec", "Finished", "Consent",
+  "TDMF1", "TDMF2", "TDMF3", "TDMF4", "TDMF5", "TDMF6",
+  "PDS1_1", "PDS1_2", "PDS1_3", "PDS1_5", "PDS1_6", "PDS1_7", "PDS"
+)
+
+# Remove them
+GZMCore <- GZMCore %>%
+  dplyr::select(-all_of(columns_to_remove))
+```
+
+# Save Working Data Set
+
+```{r save working dataset, include=TRUE}
+# Save as RData
+# save(GZMCore, file = "GZMCore.RData")
+
+# Save as CSV
+# write.csv(GZMCore, file = "GZMCore.csv", row.names = FALSE)
+
+# To save this file delete the hashtag above and run the code. This will output a dataset that aligns with the cleaned one provided online for use in the other scripts. You can also use the already cleaned one provided.
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
