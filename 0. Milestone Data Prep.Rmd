@@ -30,7 +30,7 @@ set.seed(99)
 This is some extra behind the scene for the data cleaning, demographic calculations, and the alpha scores/scoring of the scales used. This uses a more unrefined dataset initially, though identifiable information has still been removed from this - including all TEXT columns where participants provided manual inputs to demographic questions, some of which were quite detailed and potentially identifiable in combination with other data. Text input columns already removed include: 
 
 - neurodivergence and disability status; reasoning is unique combinations of disorders and conditions listed can be identifiable in combination with other data
-- religion; same reasoning as above
+- state/territory of residence, race, ethnicity, and religion; same reasoning as above (this can be released to any interested university-affiliated academic on request)
 - school type; Australia has a lot of unique private schools and religious schools, especially by different state, so these can be easily identifiable in combination with other data
 - specific family member who participants came out to; was not used in analysis and is identifiable based on specific response cases as additional context was often given
 
